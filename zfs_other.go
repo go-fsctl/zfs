@@ -47,7 +47,7 @@ func (h *Handle) PoolDestroy(name string) error { return ErrUnsupported }
 func (h *Handle) PoolExport(name string, force, hardforce bool) error { return ErrUnsupported }
 
 // PoolTryImport is unsupported off Linux.
-func (h *Handle) PoolTryImport(paths ...string) (Nvlist, error) { return nil, ErrUnsupported }
+func (h *Handle) PoolTryImport(tryconfig Nvlist) (Nvlist, error) { return nil, ErrUnsupported }
 
 // PoolImport is unsupported off Linux.
 func (h *Handle) PoolImport(name string, config Nvlist) (Nvlist, error) { return nil, ErrUnsupported }
