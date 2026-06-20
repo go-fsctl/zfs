@@ -22,16 +22,33 @@ Targets **OpenZFS 2.2.x on Linux** (validated against 2.2.2, aarch64). The
 h, err := zfs.Open()              // open("/dev/zfs")
 defer h.Close()
 
-// READ: list imported pools, decoding the kernel's config nvlist.
-cfgs, err := h.PoolConfigs()      // map[string]zfs.Nvlist
-names, err := h.PoolNames()
+// POOL lifecycle (pure-Go pool creation — no libzfs, no zpool(8)):
+root := zfs.Vdev{Type: zfs.VDEV_TYPE_ROOT, Children: []zfs.Vdev{
+    {Type: zfs.VDEV_TYPE_FILE, Path: "/var/tmp/disk0.img"},
+}}
+err = h.PoolCreate("tank", root, nil)             // ZFS_IOC_POOL_CREATE
+cfgs, err := h.PoolConfigs()                      // ZFS_IOC_POOL_CONFIGS
+pp, err := h.PoolGetProps("tank")                 // ZFS_IOC_POOL_GET_PROPS
+err = h.PoolExport("tank", false, false)          // ZFS_IOC_POOL_EXPORT
+_, err = h.PoolImport("tank", cfgs["tank"])       // ZFS_IOC_POOL_IMPORT
+err = h.PoolDestroy("tank")                       // ZFS_IOC_POOL_DESTROY
 
-// WRITE: drive mutating ops via packed native nvlists.
-err = h.Snapshot("tank", []string{"tank@snap1"})  // ZFS_IOC_SNAPSHOT
+// DATASET lifecycle:
 err = h.CreateFilesystem("tank/ds1")              // ZFS_IOC_CREATE
-
-stats, err := h.ObjsetStats("tank/ds1")           // ZFS_IOC_OBJSET_STATS
+err = h.SetProp("tank/ds1", zfs.Nvlist{"quota": uint64(64 << 20)}) // ZFS_IOC_SET_PROP
+props, err := h.GetProps("tank/ds1")              // ZFS_IOC_OBJSET_STATS (flattened)
+err = h.Rename("tank/ds1", "tank/ds2", false)     // ZFS_IOC_RENAME
+err = h.Snapshot("tank", []string{"tank/ds2@s1"}) // ZFS_IOC_SNAPSHOT
+err = h.Destroy("tank/ds2@s1", false)             // ZFS_IOC_DESTROY
+err = h.Destroy("tank/ds2", false)                // ZFS_IOC_DESTROY
 ```
+
+`SetProp` takes the kernel's native value type per property: a `uint64` enum
+index for `INDEX` properties (e.g. `compression`, `atime`) and `NUMBER`
+properties (e.g. `quota`), or a `string` for `STRING`-typed properties — the
+same conversion the `zpool`/`zfs` CLI performs before the ioctl. Enabling a
+feature-gated value (e.g. `compression=lz4`) requires that feature to be
+enabled on the pool at creation time.
 
 The native nvlist codec is exported and usable on any platform:
 
@@ -42,12 +59,28 @@ nv, err := zfs.DecodeNative(b)
 
 ## Implemented ioctls
 
-| Operation            | ioctl                  | Direction      |
-| -------------------- | ---------------------- | -------------- |
-| List imported pools  | `ZFS_IOC_POOL_CONFIGS` | read (decode)  |
-| Dataset properties   | `ZFS_IOC_OBJSET_STATS` | read (decode)  |
-| Create snapshot(s)   | `ZFS_IOC_SNAPSHOT`     | write (encode) |
-| Create filesystem    | `ZFS_IOC_CREATE`       | write (encode) |
+| Operation            | ioctl                   | Direction      |
+| -------------------- | ----------------------- | -------------- |
+| List imported pools  | `ZFS_IOC_POOL_CONFIGS`  | read (decode)  |
+| Pool properties      | `ZFS_IOC_POOL_GET_PROPS`| read (decode)  |
+| Dataset properties   | `ZFS_IOC_OBJSET_STATS`  | read (decode)  |
+| Create pool          | `ZFS_IOC_POOL_CREATE`   | write (encode) |
+| Export pool          | `ZFS_IOC_POOL_EXPORT`   | write          |
+| Import pool          | `ZFS_IOC_POOL_IMPORT`   | write (encode) |
+| Destroy pool         | `ZFS_IOC_POOL_DESTROY`  | write          |
+| Create snapshot(s)   | `ZFS_IOC_SNAPSHOT`      | write (encode) |
+| Create filesystem    | `ZFS_IOC_CREATE`        | write (encode) |
+| Set properties       | `ZFS_IOC_SET_PROP`      | write (encode) |
+| Rename dataset       | `ZFS_IOC_RENAME`        | write          |
+| Destroy dataset/snap | `ZFS_IOC_DESTROY`       | write          |
+
+`PoolCreate` packs the bare root vdev tree (`{type:"root", children:[…]}`) into
+`zc_nvlist_conf` — exactly what the kernel hands to `spa_create()` as its
+`nvroot`. `PoolImport` takes a full pool config (carrying `pool_guid` + the
+vdev tree), e.g. one captured from `PoolConfigs` while the pool is still
+imported. `PoolTryImport` is wired to `ZFS_IOC_POOL_TRYIMPORT` but the kernel
+requires a tryconfig already assembled from on-disk vdev labels; decoding the
+XDR on-disk label is not yet implemented, so it takes a caller-supplied config.
 
 ## How it works
 
@@ -58,11 +91,15 @@ nv, err := zfs.DecodeNative(b)
   Mirrors OpenZFS `module/nvpair/nvpair.c` (`nvs_native_*`).
 - **`abi.go`** — `ZFS_IOC_*` request numbers (Linux uses the raw `zfs_ioc_t`
   enum value, base `'Z'<<8 = 0x5a00`, as the ioctl cmd via the misc device —
-  not `_IOWR`-encoded) and the `zfs_cmd_t` field offsets (`sizeof == 13744`).
+  not `_IOWR`-encoded), the `ZPOOL_CONFIG_*`/`VDEV_TYPE_*` config keys, and the
+  `zfs_cmd_t` field offsets (`sizeof == 13744`).
 - **`cmd_linux.go`** — `/dev/zfs` open + `ioctl` via
   `golang.org/x/sys/unix.Syscall(SYS_IOCTL, …)`, with the `zfs_cmd_t` held as a
   flat byte buffer accessed at exact offsets.
-- **`zfs_linux.go`** — the typed public API.
+- **`zfs_linux.go`** — read paths + filesystem/snapshot create.
+- **`pool_linux.go`** — pool lifecycle (create/destroy/export/import).
+- **`dataset_linux.go`** — dataset destroy/rename/set-prop/get-props.
+- **`vdev.go`** — platform-neutral `Vdev` tree → config nvlist rendering.
 
 ## Testing
 
