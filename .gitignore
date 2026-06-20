@@ -1,0 +1,6 @@
+# Build artifacts
+/zfsprobe
+*.test
+*.out
+# Editor/OS cruft
+.DS_Store
