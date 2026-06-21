@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -362,6 +363,203 @@ func TestIntegrationSendRecv(t *testing.T) {
 		}
 	}
 	t.Logf("Receive proof OK: OUR Receive consumed a real CLI stream; %d files match by sha256", len(want))
+}
+
+// TestIntegrationLifecycle validates Clone, Rollback, Hold/Release/Holds and
+// Bookmark/GetBookmarks/DestroyBookmarks against the live kernel, cross-checked
+// with the real `zfs`/`zpool` CLI (used ONLY for setup + verification, never by
+// the library under test). It is destructive and self-contained: it builds its
+// own file-backed pool and tears it down at the end.
+//
+// Requires root, the zfs CLI, and a writable $ZFS_TEST_DIR (default /var/tmp).
+// Run inside the guest:
+//
+//	sudo -E go test -run Lifecycle -v ./...
+func TestIntegrationLifecycle(t *testing.T) {
+	h := requireKernel(t)
+	defer h.Close()
+
+	if _, err := exec.LookPath("zfs"); err != nil {
+		t.Skip("zfs CLI not found; needed for cross-check")
+	}
+	dir := os.Getenv("ZFS_TEST_DIR")
+	if dir == "" {
+		dir = "/var/tmp"
+	}
+	const pool = "gofsctl_lcpool"
+	img := filepath.Join(dir, "gofsctl_lc_d0.img")
+
+	run := func(name string, args ...string) string {
+		t.Helper()
+		out, err := exec.Command(name, args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s %v: %v\n%s", name, args, err, out)
+		}
+		return string(out)
+	}
+	// cli runs a CLI command and returns its combined output and error (for
+	// cases where we EXPECT failure, e.g. destroy of a held snapshot).
+	cli := func(name string, args ...string) (string, error) {
+		out, err := exec.Command(name, args...).CombinedOutput()
+		return string(out), err
+	}
+
+	// Fresh backing file and pool (CLI setup only).
+	_ = exec.Command("zpool", "destroy", pool).Run()
+	_ = os.Remove(img)
+	f, err := os.OpenFile(img, os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		t.Skipf("cannot create backing file %s: %v", img, err)
+	}
+	if err := f.Truncate(256 << 20); err != nil {
+		f.Close()
+		t.Fatalf("truncate: %v", err)
+	}
+	f.Close()
+	defer os.Remove(img)
+	run("zpool", "create", "-f", pool, img)
+	defer func() { _ = exec.Command("zpool", "destroy", pool).Run() }()
+
+	mnt := "/" + pool
+
+	// ---------------------------------------------------------------
+	// Clone: snapshot a source fs, OUR Clone, cross-check via CLI.
+	// ---------------------------------------------------------------
+	src := pool + "/src"
+	run("zfs", "create", src)
+	if err := os.WriteFile(filepath.Join(mnt, "src", "data.txt"), []byte("original\n"), 0644); err != nil {
+		t.Fatalf("write src data: %v", err)
+	}
+	run("zfs", "snapshot", src+"@base")
+
+	clone := pool + "/clone"
+	if err := h.Clone(src+"@base", clone, nil); err != nil {
+		t.Fatalf("OUR Clone: %v", err)
+	}
+	// Cross-check: clone appears as a filesystem and its origin is src@base.
+	fsList := run("zfs", "list", "-H", "-t", "filesystem", "-o", "name")
+	if !strings.Contains(fsList, clone) {
+		t.Errorf("clone %q not in `zfs list -t filesystem`:\n%s", clone, fsList)
+	}
+	origin := strings.TrimSpace(run("zfs", "get", "-H", "-o", "value", "origin", clone))
+	if origin != src+"@base" {
+		t.Errorf("clone origin = %q, want %q", origin, src+"@base")
+	}
+	t.Logf("Clone proof OK: %s exists; `zfs get origin` = %s", clone, origin)
+
+	// ---------------------------------------------------------------
+	// Rollback: write+snapshot, modify, OUR Rollback, verify reverted.
+	// ---------------------------------------------------------------
+	rb := pool + "/rb"
+	run("zfs", "create", rb)
+	rbFile := filepath.Join(mnt, "rb", "v.txt")
+	if err := os.WriteFile(rbFile, []byte("v1\n"), 0644); err != nil {
+		t.Fatalf("write rb v1: %v", err)
+	}
+	run("zfs", "snapshot", rb+"@v1")
+	if err := os.WriteFile(rbFile, []byte("v2-modified\n"), 0644); err != nil {
+		t.Fatalf("write rb v2: %v", err)
+	}
+	target, err := h.Rollback(rb)
+	if err != nil {
+		t.Fatalf("OUR Rollback: %v", err)
+	}
+	t.Logf("OUR Rollback(%s) -> %s", rb, target)
+	got, err := os.ReadFile(rbFile)
+	if err != nil {
+		t.Fatalf("read rb after rollback: %v", err)
+	}
+	if string(got) != "v1\n" {
+		t.Errorf("after Rollback content = %q, want %q", got, "v1\n")
+	}
+	if target != rb+"@v1" {
+		t.Errorf("Rollback target = %q, want %q", target, rb+"@v1")
+	}
+	t.Logf("Rollback proof OK: file content reverted to %q", got)
+
+	// ---------------------------------------------------------------
+	// Hold / Release: OUR Hold blocks destroy (EBUSY); Release unblocks.
+	// ---------------------------------------------------------------
+	hsnap := src + "@base"
+	const tag = "gofsctl_keep"
+	if err := h.Hold(hsnap, tag, false); err != nil {
+		t.Fatalf("OUR Hold: %v", err)
+	}
+	holdsOut := run("zfs", "holds", "-H", hsnap)
+	if !strings.Contains(holdsOut, tag) {
+		t.Errorf("`zfs holds` missing tag %q:\n%s", tag, holdsOut)
+	}
+	t.Logf("Hold proof OK: `zfs holds %s` = %s", hsnap, strings.TrimSpace(holdsOut))
+	// OUR Holds() must agree.
+	hmap, err := h.Holds(hsnap)
+	if err != nil {
+		t.Fatalf("OUR Holds: %v", err)
+	}
+	if _, ok := hmap[tag]; !ok {
+		t.Errorf("OUR Holds() = %v, want tag %q present", hmap, tag)
+	}
+	// Destroy must now fail with EBUSY (snapshot is held). The clone also
+	// depends on src@base, so destroy a fresh held snapshot to isolate EBUSY.
+	hsnap2 := rb + "@v1"
+	if err := h.Hold(hsnap2, tag, false); err != nil {
+		t.Fatalf("OUR Hold hsnap2: %v", err)
+	}
+	if out, derr := cli("zfs", "destroy", hsnap2); derr == nil {
+		t.Errorf("destroy of held %s unexpectedly succeeded:\n%s", hsnap2, out)
+	} else {
+		t.Logf("Hold proof OK: destroy of held %s correctly failed: %s", hsnap2, strings.TrimSpace(out))
+	}
+	// Release, then destroy succeeds.
+	if err := h.Release(hsnap2, tag); err != nil {
+		t.Fatalf("OUR Release: %v", err)
+	}
+	run("zfs", "destroy", hsnap2)
+	t.Logf("Release proof OK: after OUR Release, destroy of %s succeeded", hsnap2)
+	// Release the first hold too (so teardown is clean).
+	if err := h.Release(hsnap, tag); err != nil {
+		t.Fatalf("OUR Release hsnap: %v", err)
+	}
+
+	// ---------------------------------------------------------------
+	// Bookmark / GetBookmarks / DestroyBookmarks.
+	// ---------------------------------------------------------------
+	bsnap := src + "@base"
+	bmark := src + "#bm1"
+	if err := h.Bookmark(bsnap, bmark); err != nil {
+		t.Fatalf("OUR Bookmark: %v", err)
+	}
+	bmList := run("zfs", "list", "-H", "-t", "bookmark", "-o", "name")
+	if !strings.Contains(bmList, bmark) {
+		t.Errorf("bookmark %q not in `zfs list -t bookmark`:\n%s", bmark, bmList)
+	}
+	t.Logf("Bookmark proof OK: `zfs list -t bookmark` shows %s", bmark)
+	// OUR GetBookmarks must list it (short name = part after '#').
+	bms, err := h.GetBookmarks(src)
+	if err != nil {
+		t.Fatalf("OUR GetBookmarks: %v", err)
+	}
+	if _, ok := bms["bm1"]; !ok {
+		t.Errorf("OUR GetBookmarks() = %v, want \"bm1\" present", keysOfNv(bms))
+	} else {
+		t.Logf("GetBookmarks proof OK: OUR GetBookmarks(%s) = %v", src, keysOfNv(bms))
+	}
+	// OUR DestroyBookmarks removes it.
+	if err := h.DestroyBookmarks(bmark); err != nil {
+		t.Fatalf("OUR DestroyBookmarks: %v", err)
+	}
+	bmList2 := run("zfs", "list", "-H", "-t", "bookmark", "-o", "name")
+	if strings.Contains(bmList2, bmark) {
+		t.Errorf("bookmark %q still present after DestroyBookmarks:\n%s", bmark, bmList2)
+	}
+	t.Logf("DestroyBookmarks proof OK: %s gone from `zfs list -t bookmark`", bmark)
+}
+
+func keysOfNv(m map[string]Nvlist) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	return ks
 }
 
 func sha256File(t *testing.T, path string) string {
