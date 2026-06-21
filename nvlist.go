@@ -215,6 +215,13 @@ func (e *nvEncoder) encodeValue(v Value) (val, trailer []byte, typ, nelem int, e
 		return b, nil, dataTypeBooleanValue, 1, nil
 	case Byte:
 		return []byte{byte(x)}, nil, dataTypeByte, 1, nil
+	case []byte:
+		// DATA_TYPE_BYTE_ARRAY: the value is the raw bytes copied verbatim
+		// (8-byte-padded), with nvp_value_elem == the byte count. Used to
+		// carry the leading dmu_replay_record_t into ZFS_IOC_RECV_NEW.
+		b := make([]byte, len(x))
+		copy(b, x)
+		return b, nil, dataTypeByteArray, len(x), nil
 	case uint64:
 		b := make([]byte, 8)
 		e.bo.PutUint64(b, x)
@@ -431,6 +438,10 @@ func (d *nvDecoder) decodeScalar(typ, nelem int, val []byte) (Value, error) {
 		return d.bo.Uint32(val[:4]) != 0, nil
 	case dataTypeByte:
 		return Byte(val[0]), nil
+	case dataTypeByteArray:
+		out := make([]byte, nelem)
+		copy(out, val[:nelem])
+		return out, nil
 	case dataTypeUint64:
 		return d.bo.Uint64(val[:8]), nil
 	case dataTypeInt64:

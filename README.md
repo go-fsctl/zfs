@@ -41,6 +41,16 @@ err = h.Rename("tank/ds1", "tank/ds2", false)     // ZFS_IOC_RENAME
 err = h.Snapshot("tank", []string{"tank/ds2@s1"}) // ZFS_IOC_SNAPSHOT
 err = h.Destroy("tank/ds2@s1", false)             // ZFS_IOC_DESTROY
 err = h.Destroy("tank/ds2", false)                // ZFS_IOC_DESTROY
+
+// SEND / RECEIVE (replication). The kernel writes/reads the DMU replay stream
+// to/from the file descriptor; the library only drives the ioctl + nvlist.
+out, _ := os.Create("snap.stream")
+err = h.Send("tank/ds2@s1", out, zfs.SendOptions{})              // ZFS_IOC_SEND_NEW
+// incremental: zfs.SendOptions{FromSnap: "s0", LargeBlocks: true, Compress: true}
+
+in, _ := os.Open("snap.stream")
+br, err := h.Receive("tank/restored@s1", in, zfs.RecvOptions{})  // ZFS_IOC_RECV_NEW
+// br.ToName / br.ToGuid / br.Type come from the stream's DRR_BEGIN record.
 ```
 
 `SetProp` takes the kernel's native value type per property: a `uint64` enum
@@ -73,6 +83,8 @@ nv, err := zfs.DecodeNative(b)
 | Set properties       | `ZFS_IOC_SET_PROP`      | write (encode) |
 | Rename dataset       | `ZFS_IOC_RENAME`        | write          |
 | Destroy dataset/snap | `ZFS_IOC_DESTROY`       | write          |
+| Send (replication)   | `ZFS_IOC_SEND_NEW`      | write (fd+nvl) |
+| Receive (replication)| `ZFS_IOC_RECV_NEW`      | write (fd+nvl) |
 
 `PoolCreate` packs the bare root vdev tree (`{type:"root", children:[…]}`) into
 `zc_nvlist_conf` — exactly what the kernel hands to `spa_create()` as its
@@ -99,6 +111,15 @@ XDR on-disk label is not yet implemented, so it takes a caller-supplied config.
 - **`zfs_linux.go`** — read paths + filesystem/snapshot create.
 - **`pool_linux.go`** — pool lifecycle (create/destroy/export/import).
 - **`dataset_linux.go`** — dataset destroy/rename/set-prop/get-props.
+- **`send_recv_linux.go`** — `Send`/`Receive` over the `lzc_send`/`lzc_receive`
+  "new-style" ioctl ABI (`zc_name` + packed input nvlist in `zc_nvlist_src` +
+  output nvlist in `zc_nvlist_dst`). `Send` passes the output fd and feature
+  flags in the input nvlist; the kernel writes the DMU replay stream to the fd.
+  `Receive` reads the leading 312-byte `dmu_replay_record_t` (the `DRR_BEGIN`
+  record) from the stream, passes it as a `byte_array` plus the input fd, and
+  the kernel consumes the rest of the stream. Stream bytes are never produced
+  or parsed in Go. `send_recv.go` holds the platform-neutral option/record
+  types and `DRR_BEGIN` decoding.
 - **`vdev.go`** — platform-neutral `Vdev` tree → config nvlist rendering.
 
 ## Testing

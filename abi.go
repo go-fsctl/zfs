@@ -35,8 +35,13 @@ const (
 	ZFS_IOC_CREATE         = zfsIocFirst + 0x17 // 0x5a17
 	ZFS_IOC_DESTROY        = zfsIocFirst + 0x18 // 0x5a18
 	ZFS_IOC_RENAME         = zfsIocFirst + 0x1a // 0x5a1a
+	ZFS_IOC_RECV           = zfsIocFirst + 0x1b // 0x5a1b (legacy)
+	ZFS_IOC_SEND           = zfsIocFirst + 0x1c // 0x5a1c (legacy)
 	ZFS_IOC_SNAPSHOT       = zfsIocFirst + 0x23 // 0x5a23
 	ZFS_IOC_POOL_GET_PROPS = zfsIocFirst + 0x27 // 0x5a27
+	ZFS_IOC_SEND_NEW       = zfsIocFirst + 0x40 // 0x5a40 (lzc_send)
+	ZFS_IOC_SEND_SPACE     = zfsIocFirst + 0x41 // 0x5a41
+	ZFS_IOC_RECV_NEW       = zfsIocFirst + 0x46 // 0x5a46 (lzc_receive)
 )
 
 // ZPOOL_CONFIG_* and VDEV_TYPE_* string keys used to build the pool
@@ -115,4 +120,46 @@ const (
 	offZcFlags           = 13652
 	offZcCleanupFd       = 13664
 	offZcZoneid          = 13736
+)
+
+// DMU send/receive stream constants and the dmu_replay_record_t layout, all
+// confirmed by compiling the exact OpenZFS 2.2.2 structs (include/sys/
+// zfs_ioctl.h) against the headers in the target guest:
+//
+//	sizeof(dmu_replay_record_t)  == 312
+//	sizeof(struct drr_begin)     == 304
+//	offsetof(.., drr_payloadlen) == 4
+//	offsetof(.., drr_u)          == 8
+//	drr_begin.drr_magic          @ 8
+//	drr_begin.drr_toguid         @ 40
+//	drr_begin.drr_toname         @ 56  (char[MAXNAMELEN])
+//	DMU_BACKUP_MAGIC             == 0x2f5bacbac
+//
+// The receive ioctl (ZFS_IOC_RECV_NEW) takes the leading dmu_replay_record_t
+// of the stream — a DRR_BEGIN record — verbatim as a byte_array nvpair, so we
+// only need to parse enough of it to validate the magic/type and report the
+// target name/guid; the kernel consumes the rest of the stream from the fd.
+const (
+	// sizeofDmuReplayRecord is sizeof(dmu_replay_record_t).
+	sizeofDmuReplayRecord = 312
+
+	// dmuBackupMagic is the DRR_BEGIN drr_magic value (host-endian on the
+	// wire for a native stream). A foreign-endian stream carries the
+	// byte-swapped magic; we detect and report that rather than guess.
+	dmuBackupMagic = 0x2f5bacbac
+
+	// drrTypeBegin is DRR_BEGIN (the first value of dmu_replay_record_type).
+	drrTypeBegin = 0
+
+	// dmu_replay_record_t field offsets (within the 312-byte record).
+	offDrrType        = 0  // uint32 (enum)
+	offDrrPayloadLen  = 4  // uint32
+	offDrrBeginMagic  = 8  // uint64 drr_begin.drr_magic
+	offDrrBeginVerInf = 16 // uint64 drr_begin.drr_versioninfo
+	offDrrBeginCtime  = 24 // uint64 drr_begin.drr_creation_time
+	offDrrBeginType   = 32 // uint32 drr_begin.drr_type (dmu_objset_type_t)
+	offDrrBeginFlags  = 36 // uint32 drr_begin.drr_flags
+	offDrrBeginToGuid = 40 // uint64 drr_begin.drr_toguid
+	offDrrBeginFromG  = 48 // uint64 drr_begin.drr_fromguid
+	offDrrBeginToName = 56 // char[MAXNAMELEN] drr_begin.drr_toname
 )
