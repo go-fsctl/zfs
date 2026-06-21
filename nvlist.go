@@ -107,6 +107,17 @@ type Value any
 // Boolean is DATA_TYPE_BOOLEAN: a name with no value (e.g. a feature flag).
 type Boolean struct{}
 
+// Uint8Array is DATA_TYPE_UINT8_ARRAY: a packed array of uint8 elements. On
+// the wire it is byte-for-byte identical to a DATA_TYPE_BYTE_ARRAY (the raw
+// bytes, 8-byte padded, with nvp_value_elem == the element count) but carries
+// a distinct data_type_t. The crypto ioctls (ZFS_IOC_LOAD_KEY / _CREATE /
+// _CHANGE_KEY) look the wrapping key up with nvlist_lookup_uint8_array, which
+// is type-strict, so the wkeydata pair MUST be a UINT8_ARRAY — a plain []byte
+// (BYTE_ARRAY) is rejected by the kernel. A distinct Go type is required
+// because []byte and []uint8 are the same type and cannot be told apart in a
+// type switch.
+type Uint8Array []byte
+
 // Byte is DATA_TYPE_BYTE.
 type Byte uint8
 
@@ -222,6 +233,12 @@ func (e *nvEncoder) encodeValue(v Value) (val, trailer []byte, typ, nelem int, e
 		b := make([]byte, len(x))
 		copy(b, x)
 		return b, nil, dataTypeByteArray, len(x), nil
+	case Uint8Array:
+		// DATA_TYPE_UINT8_ARRAY: same wire form as a byte array but a
+		// distinct type tag. Used for "wkeydata" in the crypto ioctls.
+		b := make([]byte, len(x))
+		copy(b, x)
+		return b, nil, dataTypeUint8Array, len(x), nil
 	case uint64:
 		b := make([]byte, 8)
 		e.bo.PutUint64(b, x)
@@ -440,6 +457,10 @@ func (d *nvDecoder) decodeScalar(typ, nelem int, val []byte) (Value, error) {
 		return Byte(val[0]), nil
 	case dataTypeByteArray:
 		out := make([]byte, nelem)
+		copy(out, val[:nelem])
+		return out, nil
+	case dataTypeUint8Array:
+		out := make(Uint8Array, nelem)
 		copy(out, val[:nelem])
 		return out, nil
 	case dataTypeUint64:

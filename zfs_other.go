@@ -37,6 +37,26 @@ func (h *Handle) Snapshot(pool string, fullnames []string) error { return ErrUns
 // CreateFilesystem is unsupported off Linux.
 func (h *Handle) CreateFilesystem(name string) error { return ErrUnsupported }
 
+// CreateEncrypted is unsupported off Linux.
+func (h *Handle) CreateEncrypted(name string, key []byte, props Nvlist) error {
+	return ErrUnsupported
+}
+
+// LoadKey is unsupported off Linux.
+func (h *Handle) LoadKey(fs string, key []byte, nomount bool) error { return ErrUnsupported }
+
+// UnloadKey is unsupported off Linux.
+func (h *Handle) UnloadKey(fs string) error { return ErrUnsupported }
+
+// ChangeKey is unsupported off Linux.
+func (h *Handle) ChangeKey(fs string, newKey []byte, props Nvlist) error { return ErrUnsupported }
+
+// Promote is unsupported off Linux.
+func (h *Handle) Promote(cloneFs string) error { return ErrUnsupported }
+
+// Inherit is unsupported off Linux.
+func (h *Handle) Inherit(fs, prop string, received bool) error { return ErrUnsupported }
+
 // ObjsetStats is unsupported off Linux.
 func (h *Handle) ObjsetStats(name string) (Nvlist, error) { return nil, ErrUnsupported }
 

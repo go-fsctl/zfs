@@ -554,6 +554,226 @@ func TestIntegrationLifecycle(t *testing.T) {
 	t.Logf("DestroyBookmarks proof OK: %s gone from `zfs list -t bookmark`", bmark)
 }
 
+// TestIntegrationEncryptPromoteInherit exercises the encryption key-management
+// ops (CreateEncrypted / UnloadKey / LoadKey / ChangeKey) plus Promote and
+// Inherit against the live kernel, cross-checking each against the zfs CLI.
+func TestIntegrationEncryptPromoteInherit(t *testing.T) {
+	h := requireKernel(t)
+	defer h.Close()
+
+	if _, err := exec.LookPath("zfs"); err != nil {
+		t.Skip("zfs CLI not found; needed for cross-check")
+	}
+	dir := os.Getenv("ZFS_TEST_DIR")
+	if dir == "" {
+		dir = "/var/tmp"
+	}
+	const pool = "gofsctl_encpool"
+	img := filepath.Join(dir, "gofsctl_enc_d0.img")
+
+	run := func(name string, args ...string) string {
+		t.Helper()
+		out, err := exec.Command(name, args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s %v: %v\n%s", name, args, err, out)
+		}
+		return string(out)
+	}
+	cli := func(name string, args ...string) (string, error) {
+		out, err := exec.Command(name, args...).CombinedOutput()
+		return string(out), err
+	}
+	get := func(prop, ds string) string {
+		t.Helper()
+		return strings.TrimSpace(run("zfs", "get", "-H", "-o", "value", prop, ds))
+	}
+
+	// Fresh backing file and pool.
+	_ = exec.Command("zpool", "destroy", pool).Run()
+	_ = os.Remove(img)
+	f, err := os.OpenFile(img, os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		t.Skipf("cannot create backing file %s: %v", img, err)
+	}
+	if err := f.Truncate(256 << 20); err != nil {
+		f.Close()
+		t.Fatalf("truncate: %v", err)
+	}
+	f.Close()
+	defer os.Remove(img)
+	run("zpool", "create", "-f", pool, img)
+	defer func() { _ = exec.Command("zpool", "destroy", pool).Run() }()
+
+	mnt := "/" + pool
+
+	// Two distinct 32-byte raw keys.
+	keyA := make([]byte, 32)
+	keyB := make([]byte, 32)
+	for i := 0; i < 32; i++ {
+		keyA[i] = byte(0xA0 + i)
+		keyB[i] = byte(0x10 + i)
+	}
+
+	// ---------------------------------------------------------------
+	// CreateEncrypted: raw 32-byte key, keyformat=raw, keylocation=prompt.
+	// ---------------------------------------------------------------
+	enc := pool + "/enc"
+	props := Nvlist{
+		"encryption":  uint64(ZIO_CRYPT_AES_256_GCM), // numeric enum (kernel reads uint64)
+		"keyformat":   uint64(ZFS_KEYFORMAT_RAW),
+		"keylocation": "prompt", // keylocation is read as a string
+	}
+	if err := h.CreateEncrypted(enc, keyA, props); err != nil {
+		t.Fatalf("OUR CreateEncrypted: %v", err)
+	}
+	if v := get("encryption", enc); v != "aes-256-gcm" {
+		t.Errorf("encryption = %q, want aes-256-gcm", v)
+	}
+	if v := get("keystatus", enc); v != "available" {
+		t.Errorf("keystatus after create = %q, want available", v)
+	}
+	t.Logf("CreateEncrypted proof OK: `zfs get encryption,keystatus` = %s,%s",
+		get("encryption", enc), get("keystatus", enc))
+	// The CREATE ioctl does not mount the new dataset (mounting is a userland
+	// VFS step); mount it so we can write a file.
+	run("zfs", "mount", enc)
+	// Write a file we will read back after an unload/load cycle.
+	encFile := filepath.Join(mnt, "enc", "secret.txt")
+	const secret = "encrypted-payload-12345\n"
+	if err := os.WriteFile(encFile, []byte(secret), 0644); err != nil {
+		t.Fatalf("write encrypted file: %v", err)
+	}
+	wantSum := sha256File(t, encFile)
+
+	// ---------------------------------------------------------------
+	// UnloadKey: must unmount first; keystatus -> unavailable; mount fails.
+	// ---------------------------------------------------------------
+	run("zfs", "unmount", enc)
+	if err := h.UnloadKey(enc); err != nil {
+		t.Fatalf("OUR UnloadKey: %v", err)
+	}
+	if v := get("keystatus", enc); v != "unavailable" {
+		t.Errorf("keystatus after UnloadKey = %q, want unavailable", v)
+	}
+	if out, merr := cli("zfs", "mount", enc); merr == nil {
+		t.Errorf("mount of key-less dataset unexpectedly succeeded:\n%s", out)
+	} else {
+		t.Logf("UnloadKey proof OK: keystatus=unavailable, mount correctly failed: %s",
+			strings.TrimSpace(out))
+	}
+
+	// ---------------------------------------------------------------
+	// LoadKey(same key): keystatus -> available; mount + read identical.
+	// ---------------------------------------------------------------
+	if err := h.LoadKey(enc, keyA, false); err != nil {
+		t.Fatalf("OUR LoadKey(keyA): %v", err)
+	}
+	if v := get("keystatus", enc); v != "available" {
+		t.Errorf("keystatus after LoadKey = %q, want available", v)
+	}
+	run("zfs", "mount", enc)
+	gotSum := sha256File(t, encFile)
+	if gotSum != wantSum {
+		t.Errorf("file checksum after load/mount = %s, want %s", gotSum, wantSum)
+	}
+	got, _ := os.ReadFile(encFile)
+	if string(got) != secret {
+		t.Errorf("file content after load = %q, want %q", got, secret)
+	}
+	t.Logf("LoadKey proof OK: keystatus=available, file read back identical (sha256 %s)", gotSum)
+
+	// ---------------------------------------------------------------
+	// ChangeKey(keyB): old key no longer loads; new key does.
+	// ---------------------------------------------------------------
+	// When changing the key MATERIAL the kernel re-validates the key against
+	// the keyformat, so it must be supplied in props (same as `zfs change-key`).
+	ckProps := Nvlist{
+		"keyformat":   uint64(ZFS_KEYFORMAT_RAW),
+		"keylocation": "prompt",
+	}
+	if err := h.ChangeKey(enc, keyB, ckProps); err != nil {
+		t.Fatalf("OUR ChangeKey(keyB): %v", err)
+	}
+	run("zfs", "unmount", enc)
+	if err := h.UnloadKey(enc); err != nil {
+		t.Fatalf("OUR UnloadKey after ChangeKey: %v", err)
+	}
+	if err := h.LoadKey(enc, keyA, false); err == nil {
+		t.Errorf("LoadKey(old keyA) unexpectedly succeeded after ChangeKey")
+	} else {
+		t.Logf("ChangeKey proof OK: LoadKey(old key) correctly failed: %v", err)
+	}
+	if err := h.LoadKey(enc, keyB, false); err != nil {
+		t.Fatalf("OUR LoadKey(new keyB) after ChangeKey: %v", err)
+	}
+	if v := get("keystatus", enc); v != "available" {
+		t.Errorf("keystatus after LoadKey(keyB) = %q, want available", v)
+	}
+	t.Logf("ChangeKey proof OK: LoadKey(new key) succeeded, keystatus=available")
+
+	// ---------------------------------------------------------------
+	// Promote: clone a snapshot, OUR Promote, origin relationship flips.
+	// ---------------------------------------------------------------
+	po := pool + "/po"
+	run("zfs", "create", po)
+	if err := os.WriteFile(filepath.Join(mnt, "po", "f.txt"), []byte("orig\n"), 0644); err != nil {
+		t.Fatalf("write po file: %v", err)
+	}
+	run("zfs", "snapshot", po+"@s1")
+	clone := pool + "/poclone"
+	if err := h.Clone(po+"@s1", clone, nil); err != nil {
+		t.Fatalf("Clone for promote: %v", err)
+	}
+	// Before promote: clone's origin is po@s1; po has no origin.
+	if o := get("origin", clone); o != po+"@s1" {
+		t.Fatalf("pre-promote clone origin = %q, want %q", o, po+"@s1")
+	}
+	if err := h.Promote(clone); err != nil {
+		t.Fatalf("OUR Promote: %v", err)
+	}
+	// After promote: the snapshot moved onto the clone, so the ORIGINAL's
+	// origin now points into the clone, and the clone's origin is "-".
+	origClone := get("origin", clone)
+	origPo := get("origin", po)
+	if !strings.HasPrefix(origPo, clone+"@") {
+		t.Errorf("after Promote, origin of original %q = %q, want it to point into clone %q",
+			po, origPo, clone)
+	}
+	if origClone != "-" {
+		t.Errorf("after Promote, clone origin = %q, want \"-\"", origClone)
+	}
+	t.Logf("Promote proof OK: origin flipped — `zfs get origin %s` = %s (was on the clone), clone origin = %s",
+		po, origPo, origClone)
+
+	// ---------------------------------------------------------------
+	// Inherit: set prop on parent, child inherits, OUR Inherit -> "inherited".
+	// ---------------------------------------------------------------
+	parent := pool + "/p"
+	child := parent + "/c"
+	run("zfs", "create", parent)
+	run("zfs", "set", "compression=gzip", parent)
+	run("zfs", "create", child)
+	// Give the child a LOCAL override so we can observe Inherit clearing it.
+	run("zfs", "set", "compression=lz4", child)
+	srcBefore := strings.TrimSpace(run("zfs", "get", "-H", "-o", "source", "compression", child))
+	if srcBefore != "local" {
+		t.Fatalf("pre-Inherit child compression source = %q, want local", srcBefore)
+	}
+	if err := h.Inherit(child, "compression", false); err != nil {
+		t.Fatalf("OUR Inherit: %v", err)
+	}
+	srcAfter := strings.TrimSpace(run("zfs", "get", "-H", "-o", "source", "compression", child))
+	valAfter := get("compression", child)
+	if srcAfter != "inherited from "+parent && srcAfter != "inherited" {
+		t.Errorf("after Inherit, compression source = %q, want inherited from %q", srcAfter, parent)
+	}
+	if valAfter != "gzip" {
+		t.Errorf("after Inherit, compression value = %q, want gzip (parent's)", valAfter)
+	}
+	t.Logf("Inherit proof OK: `zfs get -o source compression %s` = %q, value now %q",
+		child, srcAfter, valAfter)
+}
+
 func keysOfNv(m map[string]Nvlist) []string {
 	ks := make([]string, 0, len(m))
 	for k := range m {
