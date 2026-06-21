@@ -7,7 +7,10 @@
 package zfs
 
 import (
+	"bytes"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -210,4 +213,168 @@ func TestIntegrationPoolLifecycle(t *testing.T) {
 		t.Fatalf("PoolDestroy: %v", err)
 	}
 	t.Logf("PoolDestroy %s OK", name)
+}
+
+// TestIntegrationSendRecv validates Send and Receive against the live kernel
+// with a real CLI cross-check. It is destructive and self-contained: it builds
+// its own file-backed pool via the `zpool`/`zfs` CLI (used ONLY for
+// setup/cross-check — never by the library under test), writes data, then:
+//
+//  1. OUR Send(tp@s1) -> a stream file; cross-checks `zfs recv` (CLI) accepts
+//     it and the received files match by sha256.
+//  2. `zfs send` (CLI) -> a stream; OUR Receive() applies it; verifies the
+//     received files match by sha256.
+//
+// Requires root, the zfs CLI, and a writable $ZFS_TEST_DIR (default /var/tmp).
+// Run inside the guest:
+//
+//	sudo -E go test -run SendRecv -v ./...
+func TestIntegrationSendRecv(t *testing.T) {
+	h := requireKernel(t)
+	defer h.Close()
+
+	if _, err := exec.LookPath("zfs"); err != nil {
+		t.Skip("zfs CLI not found; needed for cross-check")
+	}
+	dir := os.Getenv("ZFS_TEST_DIR")
+	if dir == "" {
+		dir = "/var/tmp"
+	}
+	const pool = "gofsctl_srpool"
+	img := filepath.Join(dir, "gofsctl_sr_d0.img")
+
+	run := func(name string, args ...string) {
+		t.Helper()
+		out, err := exec.Command(name, args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s %v: %v\n%s", name, args, err, out)
+		}
+	}
+
+	// Fresh backing file and pool (CLI setup only).
+	_ = exec.Command("zpool", "destroy", pool).Run()
+	_ = os.Remove(img)
+	f, err := os.OpenFile(img, os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		t.Skipf("cannot create backing file %s: %v", img, err)
+	}
+	if err := f.Truncate(256 << 20); err != nil {
+		f.Close()
+		t.Fatalf("truncate: %v", err)
+	}
+	f.Close()
+	defer os.Remove(img)
+	run("zpool", "create", "-f", pool, img)
+	defer func() { _ = exec.Command("zpool", "destroy", pool).Run() }()
+
+	// Write deterministic content into the source dataset (the pool root fs is
+	// mounted at /<pool> by default).
+	mnt := "/" + pool
+	files := map[string]string{
+		"alpha.txt": "the quick brown fox jumps over the lazy dog\n",
+		"beta.bin":  string(make([]byte, 1<<16)), // 64 KiB of zeros
+		"gamma.txt": "go-fsctl pure-Go send/receive interop proof\n",
+	}
+	want := map[string]string{}
+	for n, c := range files {
+		p := filepath.Join(mnt, n)
+		if err := os.WriteFile(p, []byte(c), 0644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+		want[n] = sha256File(t, p)
+	}
+	run("zfs", "snapshot", pool+"@s1")
+
+	// ---- Proof 1: OUR Send -> CLI recv ----
+	streamPath := filepath.Join(dir, "gofsctl_sr.stream")
+	defer os.Remove(streamPath)
+	sf, err := os.Create(streamPath)
+	if err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+	if err := h.Send(pool+"@s1", sf, SendOptions{}); err != nil {
+		sf.Close()
+		t.Fatalf("Send: %v", err)
+	}
+	sf.Close()
+	st, _ := os.Stat(streamPath)
+	t.Logf("OUR Send(%s@s1) wrote %d-byte stream", pool, st.Size())
+
+	// CLI recv into a new dataset.
+	rf, err := os.Open(streamPath)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	recv := exec.Command("zfs", "recv", pool+"/r1")
+	recv.Stdin = rf
+	if out, err := recv.CombinedOutput(); err != nil {
+		rf.Close()
+		t.Fatalf("CLI `zfs recv` of OUR stream failed: %v\n%s", err, out)
+	}
+	rf.Close()
+	// Verify files match (the received fs mounts at /<pool>/r1).
+	for n, sum := range want {
+		got := sha256File(t, filepath.Join(mnt, "r1", n))
+		if got != sum {
+			t.Errorf("Send proof: %s sha256 mismatch: got %s want %s", n, got, sum)
+		}
+	}
+	t.Logf("Send proof OK: CLI recv accepted OUR stream; %d files match by sha256", len(want))
+
+	// ---- Proof 2: CLI send -> OUR Receive ----
+	cliStream := filepath.Join(dir, "gofsctl_cli.stream")
+	defer os.Remove(cliStream)
+	csf, err := os.Create(cliStream)
+	if err != nil {
+		t.Fatalf("create cli stream: %v", err)
+	}
+	send := exec.Command("zfs", "send", pool+"@s1")
+	send.Stdout = csf
+	var sendErr bytes.Buffer
+	send.Stderr = &sendErr
+	if err := send.Run(); err != nil {
+		csf.Close()
+		t.Fatalf("CLI `zfs send` failed: %v\n%s", err, sendErr.String())
+	}
+	csf.Close()
+	cst, _ := os.Stat(cliStream)
+	t.Logf("CLI `zfs send` produced %d-byte stream", cst.Size())
+
+	in, err := os.Open(cliStream)
+	if err != nil {
+		t.Fatalf("open cli stream: %v", err)
+	}
+	br, err := h.Receive(pool+"/r2@s1", in, RecvOptions{})
+	in.Close()
+	if err != nil {
+		t.Fatalf("Receive: %v", err)
+	}
+	t.Logf("OUR Receive: begin record magic=%#x type=%d toguid=%#x toname=%q",
+		br.Magic, br.Type, br.ToGuid, br.ToName)
+	// A freshly received filesystem is not auto-mounted by the receive ioctl
+	// (the CLI mounts it in a separate step). Mount it for the sha256 check
+	// (CLI used only for verification, never by the library under test).
+	run("zfs", "mount", pool+"/r2")
+	for n, sum := range want {
+		got := sha256File(t, filepath.Join(mnt, "r2", n))
+		if got != sum {
+			t.Errorf("Receive proof: %s sha256 mismatch: got %s want %s", n, got, sum)
+		}
+	}
+	t.Logf("Receive proof OK: OUR Receive consumed a real CLI stream; %d files match by sha256", len(want))
+}
+
+func sha256File(t *testing.T, path string) string {
+	t.Helper()
+	out, err := exec.Command("sha256sum", path).Output()
+	if err != nil {
+		t.Fatalf("sha256sum %s: %v", path, err)
+	}
+	// "<hex>  <path>\n"
+	for i := 0; i < len(out); i++ {
+		if out[i] == ' ' {
+			return string(out[:i])
+		}
+	}
+	return string(out)
 }

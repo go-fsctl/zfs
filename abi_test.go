@@ -83,11 +83,53 @@ func TestIocNumbers(t *testing.T) {
 		{"CREATE", ZFS_IOC_CREATE, 0x5a17},
 		{"DESTROY", ZFS_IOC_DESTROY, 0x5a18},
 		{"RENAME", ZFS_IOC_RENAME, 0x5a1a},
+		{"RECV", ZFS_IOC_RECV, 0x5a1b},
+		{"SEND", ZFS_IOC_SEND, 0x5a1c},
 		{"SNAPSHOT", ZFS_IOC_SNAPSHOT, 0x5a23},
 		{"POOL_GET_PROPS", ZFS_IOC_POOL_GET_PROPS, 0x5a27},
+		{"SEND_NEW", ZFS_IOC_SEND_NEW, 0x5a40},
+		{"SEND_SPACE", ZFS_IOC_SEND_SPACE, 0x5a41},
+		{"RECV_NEW", ZFS_IOC_RECV_NEW, 0x5a46},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s = %#x, want %#x", c.name, c.got, c.want)
 		}
+	}
+}
+
+// TestDmuReplayRecordLayout pins the dmu_replay_record_t / drr_begin layout for
+// OpenZFS 2.2.2, matching values produced by compiling the exact structs
+// (include/sys/zfs_ioctl.h) in the target guest:
+//
+//	sizeof(dmu_replay_record_t)  312
+//	offsetof(.., drr_payloadlen) 4
+//	offsetof(.., drr_u)          8   (== drr_begin.drr_magic)
+//	drr_begin.drr_toguid         40
+//	drr_begin.drr_toname         56
+//	DMU_BACKUP_MAGIC             0x2f5bacbac
+func TestDmuReplayRecordLayout(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"sizeofDmuReplayRecord", sizeofDmuReplayRecord, 312},
+		{"offDrrType", offDrrType, 0},
+		{"offDrrPayloadLen", offDrrPayloadLen, 4},
+		{"offDrrBeginMagic", offDrrBeginMagic, 8},
+		{"offDrrBeginVerInf", offDrrBeginVerInf, 16},
+		{"offDrrBeginCtime", offDrrBeginCtime, 24},
+		{"offDrrBeginType", offDrrBeginType, 32},
+		{"offDrrBeginFlags", offDrrBeginFlags, 36},
+		{"offDrrBeginToGuid", offDrrBeginToGuid, 40},
+		{"offDrrBeginFromG", offDrrBeginFromG, 48},
+		{"offDrrBeginToName", offDrrBeginToName, 56},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s = %d, want %d", c.name, c.got, c.want)
+		}
+	}
+	if dmuBackupMagic != 0x2f5bacbac {
+		t.Errorf("dmuBackupMagic = %#x, want 0x2f5bacbac", dmuBackupMagic)
 	}
 }

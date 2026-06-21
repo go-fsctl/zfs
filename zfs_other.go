@@ -6,7 +6,10 @@
 
 package zfs
 
-import "errors"
+import (
+	"errors"
+	"os"
+)
 
 // ErrUnsupported is returned by all kernel operations on non-Linux platforms.
 // The native nvlist codec (EncodeNative/DecodeNative) remains available
@@ -66,6 +69,16 @@ func (h *Handle) GetProps(name string) (map[string]Value, error) { return nil, E
 
 // PoolGetProps is unsupported off Linux.
 func (h *Handle) PoolGetProps(name string) (map[string]Value, error) { return nil, ErrUnsupported }
+
+// Send is unsupported off Linux.
+func (h *Handle) Send(snapshot string, out *os.File, opts SendOptions) error {
+	return ErrUnsupported
+}
+
+// Receive is unsupported off Linux.
+func (h *Handle) Receive(destSnap string, in *os.File, opts RecvOptions) (BeginRecord, error) {
+	return BeginRecord{}, ErrUnsupported
+}
 
 // Available reports false off Linux.
 func Available() bool { return false }
