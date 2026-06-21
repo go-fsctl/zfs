@@ -80,5 +80,32 @@ func (h *Handle) Receive(destSnap string, in *os.File, opts RecvOptions) (BeginR
 	return BeginRecord{}, ErrUnsupported
 }
 
+// Clone is unsupported off Linux.
+func (h *Handle) Clone(snapshot, newFs string, props Nvlist) error { return ErrUnsupported }
+
+// Rollback is unsupported off Linux.
+func (h *Handle) Rollback(fs string) (string, error) { return "", ErrUnsupported }
+
+// RollbackTo is unsupported off Linux.
+func (h *Handle) RollbackTo(fs, target string) (string, error) { return "", ErrUnsupported }
+
+// Hold is unsupported off Linux.
+func (h *Handle) Hold(snapshot, tag string, recursive bool) error { return ErrUnsupported }
+
+// Release is unsupported off Linux.
+func (h *Handle) Release(snapshot, tag string) error { return ErrUnsupported }
+
+// Holds is unsupported off Linux.
+func (h *Handle) Holds(snapshot string) (map[string]uint64, error) { return nil, ErrUnsupported }
+
+// Bookmark is unsupported off Linux.
+func (h *Handle) Bookmark(snapshot, bookmark string) error { return ErrUnsupported }
+
+// GetBookmarks is unsupported off Linux.
+func (h *Handle) GetBookmarks(fs string) (map[string]Nvlist, error) { return nil, ErrUnsupported }
+
+// DestroyBookmarks is unsupported off Linux.
+func (h *Handle) DestroyBookmarks(bookmarks ...string) error { return ErrUnsupported }
+
 // Available reports false off Linux.
 func Available() bool { return false }

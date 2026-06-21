@@ -42,6 +42,16 @@ err = h.Snapshot("tank", []string{"tank/ds2@s1"}) // ZFS_IOC_SNAPSHOT
 err = h.Destroy("tank/ds2@s1", false)             // ZFS_IOC_DESTROY
 err = h.Destroy("tank/ds2", false)                // ZFS_IOC_DESTROY
 
+// CLONE / ROLLBACK / HOLD / BOOKMARK:
+err = h.Clone("tank/ds2@s1", "tank/clone", nil)   // ZFS_IOC_CLONE
+target, err := h.Rollback("tank/ds2")             // ZFS_IOC_ROLLBACK (-> latest snapshot)
+err = h.Hold("tank/ds2@s1", "keep", false)        // ZFS_IOC_HOLD (blocks destroy w/ EBUSY)
+holds, err := h.Holds("tank/ds2@s1")              // ZFS_IOC_GET_HOLDS (tag -> timestamp)
+err = h.Release("tank/ds2@s1", "keep")            // ZFS_IOC_RELEASE
+err = h.Bookmark("tank/ds2@s1", "tank/ds2#bm1")   // ZFS_IOC_BOOKMARK
+bms, err := h.GetBookmarks("tank/ds2")            // ZFS_IOC_GET_BOOKMARKS
+err = h.DestroyBookmarks("tank/ds2#bm1")          // ZFS_IOC_DESTROY_BOOKMARKS
+
 // SEND / RECEIVE (replication). The kernel writes/reads the DMU replay stream
 // to/from the file descriptor; the library only drives the ioctl + nvlist.
 out, _ := os.Create("snap.stream")
@@ -83,6 +93,14 @@ nv, err := zfs.DecodeNative(b)
 | Set properties       | `ZFS_IOC_SET_PROP`      | write (encode) |
 | Rename dataset       | `ZFS_IOC_RENAME`        | write          |
 | Destroy dataset/snap | `ZFS_IOC_DESTROY`       | write          |
+| Clone from snapshot  | `ZFS_IOC_CLONE`         | write (encode) |
+| Rollback to snapshot | `ZFS_IOC_ROLLBACK`      | write (nvl)    |
+| Hold snapshot        | `ZFS_IOC_HOLD`          | write (encode) |
+| Release hold         | `ZFS_IOC_RELEASE`       | write (encode) |
+| List holds           | `ZFS_IOC_GET_HOLDS`     | read (decode)  |
+| Create bookmark      | `ZFS_IOC_BOOKMARK`      | write (encode) |
+| List bookmarks       | `ZFS_IOC_GET_BOOKMARKS` | read (decode)  |
+| Destroy bookmark(s)  | `ZFS_IOC_DESTROY_BOOKMARKS` | write (encode) |
 | Send (replication)   | `ZFS_IOC_SEND_NEW`      | write (fd+nvl) |
 | Receive (replication)| `ZFS_IOC_RECV_NEW`      | write (fd+nvl) |
 
@@ -111,6 +129,12 @@ XDR on-disk label is not yet implemented, so it takes a caller-supplied config.
 - **`zfs_linux.go`** — read paths + filesystem/snapshot create.
 - **`pool_linux.go`** — pool lifecycle (create/destroy/export/import).
 - **`dataset_linux.go`** — dataset destroy/rename/set-prop/get-props.
+- **`lifecycle_linux.go`** — `Clone`/`Rollback`/`Hold`/`Release`/`Holds`/
+  `Bookmark`/`GetBookmarks`/`DestroyBookmarks` over the `lzc_*` new-style ioctl
+  ABI. Recursive holds enumerate descendant datasets via
+  `ZFS_IOC_DATASET_LIST_NEXT` (the same walk `zfs hold -r` performs in userland)
+  and apply every hold in a single atomic ioctl. `lifecycle.go` holds the
+  platform-independent helpers (`poolOf`, the per-item error-nvlist decoder).
 - **`send_recv_linux.go`** — `Send`/`Receive` over the `lzc_send`/`lzc_receive`
   "new-style" ioctl ABI (`zc_name` + packed input nvlist in `zc_nvlist_src` +
   output nvlist in `zc_nvlist_dst`). `Send` passes the output fd and feature

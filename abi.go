@@ -23,25 +23,34 @@ func ptrOfUint16(p *uint16) unsafe.Pointer { return unsafe.Pointer(p) }
 const (
 	zfsIocFirst = 'Z' << 8 // 0x5a00
 
-	ZFS_IOC_POOL_CREATE    = zfsIocFirst + 0x00 // 0x5a00
-	ZFS_IOC_POOL_DESTROY   = zfsIocFirst + 0x01 // 0x5a01
-	ZFS_IOC_POOL_IMPORT    = zfsIocFirst + 0x02 // 0x5a02
-	ZFS_IOC_POOL_EXPORT    = zfsIocFirst + 0x03 // 0x5a03
-	ZFS_IOC_POOL_CONFIGS   = zfsIocFirst + 0x04 // 0x5a04
-	ZFS_IOC_POOL_STATS     = zfsIocFirst + 0x05 // 0x5a05
-	ZFS_IOC_POOL_TRYIMPORT = zfsIocFirst + 0x06 // 0x5a06
-	ZFS_IOC_OBJSET_STATS   = zfsIocFirst + 0x12 // 0x5a12
-	ZFS_IOC_SET_PROP       = zfsIocFirst + 0x16 // 0x5a16
-	ZFS_IOC_CREATE         = zfsIocFirst + 0x17 // 0x5a17
-	ZFS_IOC_DESTROY        = zfsIocFirst + 0x18 // 0x5a18
-	ZFS_IOC_RENAME         = zfsIocFirst + 0x1a // 0x5a1a
-	ZFS_IOC_RECV           = zfsIocFirst + 0x1b // 0x5a1b (legacy)
-	ZFS_IOC_SEND           = zfsIocFirst + 0x1c // 0x5a1c (legacy)
-	ZFS_IOC_SNAPSHOT       = zfsIocFirst + 0x23 // 0x5a23
-	ZFS_IOC_POOL_GET_PROPS = zfsIocFirst + 0x27 // 0x5a27
-	ZFS_IOC_SEND_NEW       = zfsIocFirst + 0x40 // 0x5a40 (lzc_send)
-	ZFS_IOC_SEND_SPACE     = zfsIocFirst + 0x41 // 0x5a41
-	ZFS_IOC_RECV_NEW       = zfsIocFirst + 0x46 // 0x5a46 (lzc_receive)
+	ZFS_IOC_POOL_CREATE       = zfsIocFirst + 0x00 // 0x5a00
+	ZFS_IOC_POOL_DESTROY      = zfsIocFirst + 0x01 // 0x5a01
+	ZFS_IOC_POOL_IMPORT       = zfsIocFirst + 0x02 // 0x5a02
+	ZFS_IOC_POOL_EXPORT       = zfsIocFirst + 0x03 // 0x5a03
+	ZFS_IOC_POOL_CONFIGS      = zfsIocFirst + 0x04 // 0x5a04
+	ZFS_IOC_POOL_STATS        = zfsIocFirst + 0x05 // 0x5a05
+	ZFS_IOC_POOL_TRYIMPORT    = zfsIocFirst + 0x06 // 0x5a06
+	ZFS_IOC_OBJSET_STATS      = zfsIocFirst + 0x12 // 0x5a12
+	ZFS_IOC_DATASET_LIST_NEXT = zfsIocFirst + 0x14 // 0x5a14
+	ZFS_IOC_SET_PROP          = zfsIocFirst + 0x16 // 0x5a16
+	ZFS_IOC_CREATE            = zfsIocFirst + 0x17 // 0x5a17
+	ZFS_IOC_DESTROY           = zfsIocFirst + 0x18 // 0x5a18
+	ZFS_IOC_ROLLBACK          = zfsIocFirst + 0x19 // 0x5a19 (lzc_rollback)
+	ZFS_IOC_RENAME            = zfsIocFirst + 0x1a // 0x5a1a
+	ZFS_IOC_RECV              = zfsIocFirst + 0x1b // 0x5a1b (legacy)
+	ZFS_IOC_SEND              = zfsIocFirst + 0x1c // 0x5a1c (legacy)
+	ZFS_IOC_SNAPSHOT          = zfsIocFirst + 0x23 // 0x5a23
+	ZFS_IOC_POOL_GET_PROPS    = zfsIocFirst + 0x27 // 0x5a27
+	ZFS_IOC_HOLD              = zfsIocFirst + 0x30 // 0x5a30 (lzc_hold)
+	ZFS_IOC_RELEASE           = zfsIocFirst + 0x31 // 0x5a31 (lzc_release)
+	ZFS_IOC_GET_HOLDS         = zfsIocFirst + 0x32 // 0x5a32 (lzc_get_holds)
+	ZFS_IOC_SEND_NEW          = zfsIocFirst + 0x40 // 0x5a40 (lzc_send)
+	ZFS_IOC_SEND_SPACE        = zfsIocFirst + 0x41 // 0x5a41
+	ZFS_IOC_CLONE             = zfsIocFirst + 0x42 // 0x5a42 (lzc_clone)
+	ZFS_IOC_BOOKMARK          = zfsIocFirst + 0x43 // 0x5a43 (lzc_bookmark)
+	ZFS_IOC_GET_BOOKMARKS     = zfsIocFirst + 0x44 // 0x5a44 (lzc_get_bookmarks)
+	ZFS_IOC_DESTROY_BOOKMARKS = zfsIocFirst + 0x45 // 0x5a45 (lzc_destroy_bookmarks)
+	ZFS_IOC_RECV_NEW          = zfsIocFirst + 0x46 // 0x5a46 (lzc_receive)
 )
 
 // ZPOOL_CONFIG_* and VDEV_TYPE_* string keys used to build the pool
