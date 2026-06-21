@@ -142,3 +142,21 @@ func (c *zfsCmd) setSrc(nv Nvlist) (keepalive []byte, err error) {
 	c.setU64(offZcNvlistSrcSize, uint64(len(b)))
 	return b, nil
 }
+
+// setConf packs nv into a NV_ENCODE_NATIVE buffer and wires it into
+// zc_nvlist_conf/_size, returning a buffer the caller must keep alive across
+// the ioctl. The pool create/import handlers read the pool *configuration*
+// (and vdev tree) from zc_nvlist_conf, distinct from the props in
+// zc_nvlist_src.
+func (c *zfsCmd) setConf(nv Nvlist) (keepalive []byte, err error) {
+	if nv == nil {
+		return nil, nil
+	}
+	b, err := EncodeNative(nv)
+	if err != nil {
+		return nil, err
+	}
+	c.setU64(offZcNvlistConf, uint64(uintptr(unsafe.Pointer(&b[0]))))
+	c.setU64(offZcNvlistConfSize, uint64(len(b)))
+	return b, nil
+}

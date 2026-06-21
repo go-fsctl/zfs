@@ -26,14 +26,46 @@ const (
 	ZFS_IOC_POOL_CREATE    = zfsIocFirst + 0x00 // 0x5a00
 	ZFS_IOC_POOL_DESTROY   = zfsIocFirst + 0x01 // 0x5a01
 	ZFS_IOC_POOL_IMPORT    = zfsIocFirst + 0x02 // 0x5a02
+	ZFS_IOC_POOL_EXPORT    = zfsIocFirst + 0x03 // 0x5a03
 	ZFS_IOC_POOL_CONFIGS   = zfsIocFirst + 0x04 // 0x5a04
 	ZFS_IOC_POOL_STATS     = zfsIocFirst + 0x05 // 0x5a05
+	ZFS_IOC_POOL_TRYIMPORT = zfsIocFirst + 0x06 // 0x5a06
 	ZFS_IOC_OBJSET_STATS   = zfsIocFirst + 0x12 // 0x5a12
+	ZFS_IOC_SET_PROP       = zfsIocFirst + 0x16 // 0x5a16
 	ZFS_IOC_CREATE         = zfsIocFirst + 0x17 // 0x5a17
 	ZFS_IOC_DESTROY        = zfsIocFirst + 0x18 // 0x5a18
+	ZFS_IOC_RENAME         = zfsIocFirst + 0x1a // 0x5a1a
 	ZFS_IOC_SNAPSHOT       = zfsIocFirst + 0x23 // 0x5a23
 	ZFS_IOC_POOL_GET_PROPS = zfsIocFirst + 0x27 // 0x5a27
 )
+
+// ZPOOL_CONFIG_* and VDEV_TYPE_* string keys used to build the pool
+// configuration / vdev-tree nvlist passed to ZFS_IOC_POOL_CREATE and
+// returned by the import/config ioctls. Names verified against the 2.2.2
+// headers (include/sys/fs/zfs.h) in the target guest.
+const (
+	ZPOOL_CONFIG_VERSION    = "version"
+	ZPOOL_CONFIG_POOL_NAME  = "name"
+	ZPOOL_CONFIG_POOL_GUID  = "pool_guid"
+	ZPOOL_CONFIG_VDEV_TREE  = "vdev_tree"
+	ZPOOL_CONFIG_TYPE       = "type"
+	ZPOOL_CONFIG_CHILDREN   = "children"
+	ZPOOL_CONFIG_GUID       = "guid"
+	ZPOOL_CONFIG_PATH       = "path"
+	ZPOOL_CONFIG_ASHIFT     = "ashift"
+	ZPOOL_CONFIG_WHOLE_DISK = "whole_disk"
+	ZPOOL_CONFIG_IS_LOG     = "is_log"
+
+	VDEV_TYPE_ROOT   = "root"
+	VDEV_TYPE_MIRROR = "mirror"
+	VDEV_TYPE_RAIDZ  = "raidz"
+	VDEV_TYPE_DISK   = "disk"
+	VDEV_TYPE_FILE   = "file"
+)
+
+// SPA_VERSION is the current on-disk SPA version (SPA_VERSION_5000) for
+// OpenZFS 2.2.x; feature-flagged pools advertise this version number.
+const SPA_VERSION = 5000
 
 // ZFS path-length constants from the 2.2.2 headers (Linux).
 const (

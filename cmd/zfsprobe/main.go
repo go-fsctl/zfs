@@ -3,8 +3,13 @@
 // # Copyright (c) 2026, go-fsctl
 //
 // zfsprobe is a live demonstration of github.com/go-fsctl/zfs driving the ZFS
-// kernel purely via /dev/zfs ioctls (no cgo, no libzfs, no CLI). It lists
-// imported pools, then creates a snapshot and a filesystem on the target pool.
+// kernel purely via /dev/zfs ioctls (no cgo, no libzfs, no CLI). It creates a
+// throwaway file-backed pool, runs the full dataset + pool lifecycle on it,
+// and tears it all down again.
+//
+// Run as root inside a disposable ZFS guest:
+//
+//	sudo zfsprobe [pool-name] [backing-file]
 package main
 
 import (
@@ -15,44 +20,74 @@ import (
 )
 
 func main() {
-	pool := "testpool"
+	pool := "gofsctl_probe"
+	backing := "/var/tmp/gofsctl_probe.img"
 	if len(os.Args) > 1 {
 		pool = os.Args[1]
 	}
+	if len(os.Args) > 2 {
+		backing = os.Args[2]
+	}
+
+	// Backing vdev: a 256 MiB sparse file.
+	f, err := os.OpenFile(backing, os.O_RDWR|os.O_CREATE, 0600)
+	check("create backing file", err)
+	check("size backing file", f.Truncate(256<<20))
+	f.Close()
+	defer os.Remove(backing)
 
 	h, err := zfs.Open()
 	check("open /dev/zfs", err)
 	defer h.Close()
 	fmt.Println("opened /dev/zfs (pure-Go ioctl path)")
 
-	// READ: ZFS_IOC_POOL_CONFIGS + native nvlist decode.
+	// POOL_CREATE: pure-Go pool creation from a file vdev tree.
+	root := zfs.Vdev{Type: zfs.VDEV_TYPE_ROOT, Children: []zfs.Vdev{
+		{Type: zfs.VDEV_TYPE_FILE, Path: backing},
+	}}
+	check("PoolCreate", h.PoolCreate(pool, root, nil))
+	fmt.Printf("OK: created pool %q via ZFS_IOC_POOL_CREATE\n", pool)
+
+	// Confirm via the read path and capture the config for re-import later.
 	cfgs, err := h.PoolConfigs()
 	check("PoolConfigs", err)
-	fmt.Printf("ZFS_IOC_POOL_CONFIGS: %d pool(s) imported:\n", len(cfgs))
-	for name, cfg := range cfgs {
-		fmt.Printf("  - %s  pool_guid=%v version=%v state=%v\n",
-			name, cfg["pool_guid"], cfg["version"], cfg["state"])
-	}
-	if _, ok := cfgs[pool]; !ok {
-		fmt.Printf("FAIL: pool %q not found via ioctl\n", pool)
+	cfg, ok := cfgs[pool]
+	if !ok {
+		fmt.Printf("FAIL: pool %q not listed via ioctl\n", pool)
 		os.Exit(1)
 	}
-	fmt.Printf("OK: pool %q listed via pure-Go ioctl\n", pool)
+	pp, err := h.PoolGetProps(pool)
+	check("PoolGetProps", err)
+	fmt.Printf("OK: pool %q guid=%v size=%v health=%v\n",
+		pool, cfg["pool_guid"], pp["size"], pp["health"])
 
-	// WRITE 1: ZFS_IOC_SNAPSHOT (packed native nvlist).
-	snap := pool + "@gofsctl_snap1"
-	check("Snapshot", h.Snapshot(pool, []string{snap}))
-	fmt.Printf("OK: created snapshot %s via ZFS_IOC_SNAPSHOT\n", snap)
-
-	// WRITE 2: ZFS_IOC_CREATE.
-	ds := pool + "/gofsctl_ds1"
+	// Dataset create + property set/get.
+	ds := pool + "/ds1"
 	check("CreateFilesystem", h.CreateFilesystem(ds))
-	fmt.Printf("OK: created filesystem %s via ZFS_IOC_CREATE\n", ds)
+	check("SetProp atime", h.SetProp(ds, zfs.Nvlist{"atime": uint64(0)}))
+	check("SetProp quota", h.SetProp(ds, zfs.Nvlist{"quota": uint64(64 << 20)}))
+	props, err := h.GetProps(ds)
+	check("GetProps", err)
+	fmt.Printf("OK: %s atime=%v quota=%v\n", ds, props["atime"], props["quota"])
 
-	// READ-BACK: ZFS_IOC_OBJSET_STATS on the new dataset.
-	st, err := h.ObjsetStats(ds)
-	check("ObjsetStats", err)
-	fmt.Printf("OK: ObjsetStats(%s) returned %d props\n", ds, len(st))
+	// Rename, snapshot, destroy.
+	ds2 := pool + "/ds2"
+	check("Rename", h.Rename(ds, ds2, false))
+	snap := ds2 + "@s1"
+	check("Snapshot", h.Snapshot(pool, []string{snap}))
+	check("Destroy snapshot", h.Destroy(snap, false))
+	check("Destroy dataset", h.Destroy(ds2, false))
+	fmt.Printf("OK: renamed/snapshotted/destroyed %s\n", ds2)
+
+	// Export then re-import from the captured config.
+	check("PoolExport", h.PoolExport(pool, false, false))
+	_, err = h.PoolImport(pool, cfg)
+	check("PoolImport", err)
+	fmt.Printf("OK: export/import round-trip on %q\n", pool)
+
+	// Tear down.
+	check("PoolDestroy", h.PoolDestroy(pool))
+	fmt.Printf("OK: destroyed pool %q\n", pool)
 }
 
 func check(what string, err error) {

@@ -37,5 +37,35 @@ func (h *Handle) CreateFilesystem(name string) error { return ErrUnsupported }
 // ObjsetStats is unsupported off Linux.
 func (h *Handle) ObjsetStats(name string) (Nvlist, error) { return nil, ErrUnsupported }
 
+// PoolCreate is unsupported off Linux.
+func (h *Handle) PoolCreate(name string, root Vdev, props Nvlist) error { return ErrUnsupported }
+
+// PoolDestroy is unsupported off Linux.
+func (h *Handle) PoolDestroy(name string) error { return ErrUnsupported }
+
+// PoolExport is unsupported off Linux.
+func (h *Handle) PoolExport(name string, force, hardforce bool) error { return ErrUnsupported }
+
+// PoolTryImport is unsupported off Linux.
+func (h *Handle) PoolTryImport(tryconfig Nvlist) (Nvlist, error) { return nil, ErrUnsupported }
+
+// PoolImport is unsupported off Linux.
+func (h *Handle) PoolImport(name string, config Nvlist) (Nvlist, error) { return nil, ErrUnsupported }
+
+// Destroy is unsupported off Linux.
+func (h *Handle) Destroy(name string, defer_ bool) error { return ErrUnsupported }
+
+// Rename is unsupported off Linux.
+func (h *Handle) Rename(old, newName string, recursive bool) error { return ErrUnsupported }
+
+// SetProp is unsupported off Linux.
+func (h *Handle) SetProp(name string, props Nvlist) error { return ErrUnsupported }
+
+// GetProps is unsupported off Linux.
+func (h *Handle) GetProps(name string) (map[string]Value, error) { return nil, ErrUnsupported }
+
+// PoolGetProps is unsupported off Linux.
+func (h *Handle) PoolGetProps(name string) (map[string]Value, error) { return nil, ErrUnsupported }
+
 // Available reports false off Linux.
 func Available() bool { return false }
