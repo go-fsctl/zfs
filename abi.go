@@ -39,8 +39,10 @@ const (
 	ZFS_IOC_RENAME            = zfsIocFirst + 0x1a // 0x5a1a
 	ZFS_IOC_RECV              = zfsIocFirst + 0x1b // 0x5a1b (legacy)
 	ZFS_IOC_SEND              = zfsIocFirst + 0x1c // 0x5a1c (legacy)
+	ZFS_IOC_PROMOTE           = zfsIocFirst + 0x22 // 0x5a22 (legacy)
 	ZFS_IOC_SNAPSHOT          = zfsIocFirst + 0x23 // 0x5a23
 	ZFS_IOC_POOL_GET_PROPS    = zfsIocFirst + 0x27 // 0x5a27
+	ZFS_IOC_INHERIT_PROP      = zfsIocFirst + 0x2b // 0x5a2b (legacy)
 	ZFS_IOC_HOLD              = zfsIocFirst + 0x30 // 0x5a30 (lzc_hold)
 	ZFS_IOC_RELEASE           = zfsIocFirst + 0x31 // 0x5a31 (lzc_release)
 	ZFS_IOC_GET_HOLDS         = zfsIocFirst + 0x32 // 0x5a32 (lzc_get_holds)
@@ -51,7 +53,63 @@ const (
 	ZFS_IOC_GET_BOOKMARKS     = zfsIocFirst + 0x44 // 0x5a44 (lzc_get_bookmarks)
 	ZFS_IOC_DESTROY_BOOKMARKS = zfsIocFirst + 0x45 // 0x5a45 (lzc_destroy_bookmarks)
 	ZFS_IOC_RECV_NEW          = zfsIocFirst + 0x46 // 0x5a46 (lzc_receive)
+	ZFS_IOC_LOAD_KEY          = zfsIocFirst + 0x49 // 0x5a49 (lzc_load_key)
+	ZFS_IOC_UNLOAD_KEY        = zfsIocFirst + 0x4a // 0x5a4a (lzc_unload_key)
+	ZFS_IOC_CHANGE_KEY        = zfsIocFirst + 0x4b // 0x5a4b (lzc_change_key)
 )
+
+// ZPOOL_HIDDEN_ARGS is the nested-nvlist key (in the regular zc_nvlist_src
+// input nvlist) under which sensitive arguments — notably the wrapping key
+// material "wkeydata" — are carried so the kernel can strip them before the
+// ioctl is logged to the pool history. Verified against the 2.2.2 headers in
+// the target guest (include/sys/fs/zfs.h) and the libzfs_core lzc_load_key /
+// lzc_create / lzc_change_key sources.
+const ZPOOL_HIDDEN_ARGS = "hidden_args"
+
+// dcp_cmd_t values for ZFS_IOC_CHANGE_KEY's "crypt_cmd" field (sys/dsl_crypt.h
+// in the target guest). Only the ones we exercise are named.
+const (
+	DCP_CMD_NONE          = 0 // no specific command
+	DCP_CMD_RAW_RECV      = 1 // raw receive
+	DCP_CMD_NEW_KEY       = 2 // rewrap key as an encryption root
+	DCP_CMD_INHERIT       = 3 // rewrap key with parent's wrapping key
+	DCP_CMD_FORCE_NEW_KEY = 4 // change to encryption root without rewrap
+	DCP_CMD_FORCE_INHERIT = 5 // inherit parent's key without rewrap
+)
+
+// Encryption-property NUMERIC values. Unlike ordinary dataset properties (whose
+// string values the kernel's property layer parses for us), the crypto create /
+// change-key path reads "encryption" and "keyformat" out of the props nvlist
+// directly with nvlist_lookup_uint64 (see dsl_crypto_params_create_nvlist), so
+// they MUST be supplied as uint64 enum values, not strings. "keylocation" by
+// contrast is read as a string. Values are the enum positions from
+// include/sys/fs/zfs.h in the target guest.
+//
+// enum zio_encrypt — values for the "encryption" property.
+const (
+	ZIO_CRYPT_INHERIT     = 0
+	ZIO_CRYPT_ON          = 1
+	ZIO_CRYPT_OFF         = 2
+	ZIO_CRYPT_AES_128_CCM = 3
+	ZIO_CRYPT_AES_192_CCM = 4
+	ZIO_CRYPT_AES_256_CCM = 5
+	ZIO_CRYPT_AES_128_GCM = 6
+	ZIO_CRYPT_AES_192_GCM = 7
+	ZIO_CRYPT_AES_256_GCM = 8 // the value `zfs` prints as "aes-256-gcm"
+)
+
+// zfs_keyformat_t — values for the "keyformat" property.
+const (
+	ZFS_KEYFORMAT_NONE       = 0
+	ZFS_KEYFORMAT_RAW        = 1 // a raw WRAPPING_KEY_LEN-byte key
+	ZFS_KEYFORMAT_HEX        = 2
+	ZFS_KEYFORMAT_PASSPHRASE = 3
+)
+
+// WRAPPING_KEY_LEN is the exact wkeydata length the kernel requires for
+// keyformat=raw / hex (and the length of a PBKDF2-derived passphrase key).
+// The crypto ioctls reject any other length with EINVAL.
+const WRAPPING_KEY_LEN = 32
 
 // ZPOOL_CONFIG_* and VDEV_TYPE_* string keys used to build the pool
 // configuration / vdev-tree nvlist passed to ZFS_IOC_POOL_CREATE and

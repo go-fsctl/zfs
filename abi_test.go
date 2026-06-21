@@ -99,6 +99,11 @@ func TestIocNumbers(t *testing.T) {
 		{"GET_BOOKMARKS", ZFS_IOC_GET_BOOKMARKS, 0x5a44},
 		{"DESTROY_BOOKMARKS", ZFS_IOC_DESTROY_BOOKMARKS, 0x5a45},
 		{"RECV_NEW", ZFS_IOC_RECV_NEW, 0x5a46},
+		{"PROMOTE", ZFS_IOC_PROMOTE, 0x5a22},
+		{"INHERIT_PROP", ZFS_IOC_INHERIT_PROP, 0x5a2b},
+		{"LOAD_KEY", ZFS_IOC_LOAD_KEY, 0x5a49},
+		{"UNLOAD_KEY", ZFS_IOC_UNLOAD_KEY, 0x5a4a},
+		{"CHANGE_KEY", ZFS_IOC_CHANGE_KEY, 0x5a4b},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s = %#x, want %#x", c.name, c.got, c.want)

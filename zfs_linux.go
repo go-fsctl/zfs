@@ -107,17 +107,33 @@ func (h *Handle) Snapshot(pool string, fullnames []string) error {
 //
 // This is the second MUTATING proof.
 func (h *Handle) CreateFilesystem(name string) error {
-	return h.create(name, DMU_OST_ZFS)
+	return h.create(name, DMU_OST_ZFS, nil)
 }
 
-// CreateVolume creates a ZFS volume (zvol). volsize bytes are required as a
-// property; for simplicity callers needing a zvol should set props — here we
-// expose the filesystem path which is what the validation exercises.
-func (h *Handle) create(name string, ostype int32) error {
-	// The kernel reads "type" via fnvlist_lookup_int32 — it MUST be a
-	// DATA_TYPE_INT32 nvpair (a uint64 yields ZFS_ERR_IOC_ARG_BADTYPE,
-	// errno 1032).
+// create issues ZFS_IOC_CREATE for `name` with object-set type `ostype` and an
+// optional props nvlist (omitted when empty).
+func (h *Handle) create(name string, ostype int32, props Nvlist) error {
+	return h.createWithKey(name, ostype, props, nil)
+}
+
+// createWithKey is the full ZFS_IOC_CREATE builder shared by CreateFilesystem
+// and CreateEncrypted. It assembles lzc_create's input nvlist:
+//
+//	{ "type": <int32 ostype>, "props": {...}?, "hidden_args": {"wkeydata": ...}? }
+//
+// The "type" pair MUST be DATA_TYPE_INT32 — the kernel reads it via
+// fnvlist_lookup_int32, and a uint64 yields ZFS_ERR_IOC_ARG_BADTYPE
+// (errno 1032). When key != nil the wrapping key is carried in the nested
+// hidden-args nvlist as a DATA_TYPE_UINT8_ARRAY so the kernel can strip it from
+// the logged ioctl.
+func (h *Handle) createWithKey(name string, ostype int32, props Nvlist, key []byte) error {
 	src := Nvlist{"type": ostype}
+	if len(props) > 0 {
+		src["props"] = props
+	}
+	if len(key) > 0 {
+		src[ZPOOL_HIDDEN_ARGS] = hiddenArgs(key)
+	}
 
 	cmd := &zfsCmd{}
 	if err := cmd.setName(name); err != nil {

@@ -52,6 +52,27 @@ err = h.Bookmark("tank/ds2@s1", "tank/ds2#bm1")   // ZFS_IOC_BOOKMARK
 bms, err := h.GetBookmarks("tank/ds2")            // ZFS_IOC_GET_BOOKMARKS
 err = h.DestroyBookmarks("tank/ds2#bm1")          // ZFS_IOC_DESTROY_BOOKMARKS
 
+// PROMOTE / INHERIT:
+err = h.Promote("tank/clone")                     // ZFS_IOC_PROMOTE (clone becomes origin)
+err = h.Inherit("tank/ds2", "compression", false) // ZFS_IOC_INHERIT_PROP (clear local prop)
+
+// ENCRYPTION key management. The wrapping key travels in the hidden-args
+// channel as a DATA_TYPE_UINT8_ARRAY; "encryption"/"keyformat" props are
+// NUMERIC enums (the kernel reads them as uint64), "keylocation" is a string.
+key := make([]byte, zfs.WRAPPING_KEY_LEN)         // 32 raw bytes for keyformat=raw
+err = h.CreateEncrypted("tank/enc", key, zfs.Nvlist{ // ZFS_IOC_CREATE + wkeydata
+	"encryption":  uint64(zfs.ZIO_CRYPT_AES_256_GCM),
+	"keyformat":   uint64(zfs.ZFS_KEYFORMAT_RAW),
+	"keylocation": "prompt",
+})
+err = h.UnloadKey("tank/enc")                     // ZFS_IOC_UNLOAD_KEY (keystatus -> unavailable)
+err = h.LoadKey("tank/enc", key, false)           // ZFS_IOC_LOAD_KEY  (keystatus -> available)
+newKey := make([]byte, zfs.WRAPPING_KEY_LEN)
+err = h.ChangeKey("tank/enc", newKey, zfs.Nvlist{ // ZFS_IOC_CHANGE_KEY
+	"keyformat":   uint64(zfs.ZFS_KEYFORMAT_RAW),
+	"keylocation": "prompt",
+})
+
 // SEND / RECEIVE (replication). The kernel writes/reads the DMU replay stream
 // to/from the file descriptor; the library only drives the ioctl + nvlist.
 out, _ := os.Create("snap.stream")
@@ -101,6 +122,12 @@ nv, err := zfs.DecodeNative(b)
 | Create bookmark      | `ZFS_IOC_BOOKMARK`      | write (encode) |
 | List bookmarks       | `ZFS_IOC_GET_BOOKMARKS` | read (decode)  |
 | Destroy bookmark(s)  | `ZFS_IOC_DESTROY_BOOKMARKS` | write (encode) |
+| Promote clone        | `ZFS_IOC_PROMOTE`       | write          |
+| Inherit property     | `ZFS_IOC_INHERIT_PROP`  | write          |
+| Create encrypted fs  | `ZFS_IOC_CREATE`        | write (wkeydata) |
+| Load wrapping key    | `ZFS_IOC_LOAD_KEY`      | write (wkeydata) |
+| Unload wrapping key  | `ZFS_IOC_UNLOAD_KEY`    | write          |
+| Change wrapping key  | `ZFS_IOC_CHANGE_KEY`    | write (wkeydata) |
 | Send (replication)   | `ZFS_IOC_SEND_NEW`      | write (fd+nvl) |
 | Receive (replication)| `ZFS_IOC_RECV_NEW`      | write (fd+nvl) |
 
