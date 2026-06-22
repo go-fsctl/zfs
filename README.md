@@ -1,5 +1,8 @@
 # go-fsctl/zfs
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/go-fsctl/zfs.svg)](https://pkg.go.dev/github.com/go-fsctl/zfs)
+[![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
+
 Pure-Go `libzfs_core`: drive ZFS kernel operations via `/dev/zfs` ioctls — no
 cgo, no `libzfs`, no shelling out to `zpool`/`zfs`/`zdb`.
 
