@@ -8,6 +8,7 @@ package zfs
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"unsafe"
@@ -155,12 +156,13 @@ func (h *Handle) Receive(destSnap string, in *os.File, opts RecvOptions) (BeginR
 	return br, nil
 }
 
-// readFull reads exactly len(p) bytes from f, looping over short reads (a pipe
-// or socket may return fewer bytes than requested).
-func readFull(f *os.File, p []byte) (int, error) {
+// readFull reads exactly len(p) bytes from r, looping over short reads (a pipe
+// or socket may return fewer bytes than requested). It takes an io.Reader (the
+// stream fd in production) so the short-read paths are unit-testable.
+func readFull(r io.Reader, p []byte) (int, error) {
 	n := 0
 	for n < len(p) {
-		m, err := f.Read(p[n:])
+		m, err := r.Read(p[n:])
 		n += m
 		if err != nil {
 			return n, err
@@ -209,6 +211,7 @@ func (h *Handle) callNewName(req uintptr, name string, innvl Nvlist) (Nvlist, er
 		dst := make([]byte, dstSize)
 		cmd.setU64(offZcNvlistDst, uint64(uintptr(unsafe.Pointer(&dst[0]))))
 		cmd.setU64(offZcNvlistDstSize, dstSize)
+		noteDst(dst)
 
 		err := h.ioctl(req, cmd)
 		runtime.KeepAlive(srcBuf)

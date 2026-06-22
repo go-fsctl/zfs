@@ -68,7 +68,7 @@ type Handle struct {
 
 // Open opens /dev/zfs. Requires CAP_SYS_ADMIN (effectively root) for most ops.
 func Open() (*Handle, error) {
-	f, err := os.OpenFile("/dev/zfs", os.O_RDWR, 0)
+	f, err := osOpenFile("/dev/zfs", os.O_RDWR, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open /dev/zfs: %w", err)
 	}
@@ -80,8 +80,15 @@ func (h *Handle) Close() error { return h.f.Close() }
 
 // ioctl issues a single ZFS ioctl. cmd is mutated in place (the kernel writes
 // back zc_nvlist_dst_size etc.). The caller is responsible for src/dst pinning
-// via the helpers below.
+// via the helpers below. It funnels through the ioctlFn seam so tests can
+// fault-inject any errno and emulate the kernel's buffer write-back.
 func (h *Handle) ioctl(req uintptr, cmd *zfsCmd) error {
+	return ioctlFn(h, req, cmd)
+}
+
+// realIoctl is the production ioctlFn seam: it performs the raw SYS_IOCTL
+// syscall against /dev/zfs.
+func realIoctl(h *Handle, req uintptr, cmd *zfsCmd) error {
 	_, _, errno := unix.Syscall(
 		unix.SYS_IOCTL,
 		h.f.Fd(),
@@ -107,6 +114,7 @@ func (h *Handle) callWithDst(req uintptr, build func(*zfsCmd) error, dstSize uin
 		dst := make([]byte, dstSize)
 		cmd.setU64(offZcNvlistDst, uint64(uintptr(unsafe.Pointer(&dst[0]))))
 		cmd.setU64(offZcNvlistDstSize, dstSize)
+		noteDst(dst)
 
 		err := h.ioctl(req, cmd)
 		runtime.KeepAlive(dst)
@@ -134,7 +142,7 @@ func (c *zfsCmd) setSrc(nv Nvlist) (keepalive []byte, err error) {
 	if nv == nil {
 		return nil, nil
 	}
-	b, err := EncodeNative(nv)
+	b, err := encodeNative(nv)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +160,7 @@ func (c *zfsCmd) setConf(nv Nvlist) (keepalive []byte, err error) {
 	if nv == nil {
 		return nil, nil
 	}
-	b, err := EncodeNative(nv)
+	b, err := encodeNative(nv)
 	if err != nil {
 		return nil, err
 	}

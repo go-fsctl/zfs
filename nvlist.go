@@ -125,13 +125,21 @@ type Byte uint8
 // the parallel keys slice when present; PoolConfigs etc. return plain maps.
 type Nvlist map[string]Value
 
-// nvHostOrder is the encoding endianness for this host.
-var nvHostOrder = func() (binary.ByteOrder, byte) {
-	var x uint16 = 1
-	if *(*byte)(ptrOfUint16(&x)) == 1 {
+// hostOrderFor maps the low byte of a 1-valued uint16 to the matching
+// encoding byte order: 1 means the host is little-endian, anything else
+// big-endian. Split out as a pure function so both arms are testable on any
+// host (nvHostOrder itself can only observe the host it runs on).
+func hostOrderFor(lowByte byte) (binary.ByteOrder, byte) {
+	if lowByte == 1 {
 		return binary.LittleEndian, nvLittleEndian
 	}
 	return binary.BigEndian, nvBigEndian
+}
+
+// nvHostOrder is the encoding endianness for this host.
+var nvHostOrder = func() (binary.ByteOrder, byte) {
+	var x uint16 = 1
+	return hostOrderFor(*(*byte)(ptrOfUint16(&x)))
 }
 
 // nvEncoder packs an Nvlist into NV_ENCODE_NATIVE bytes.

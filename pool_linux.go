@@ -174,6 +174,7 @@ func (h *Handle) callWithDstConf(req uintptr, build func(*zfsCmd) error, conf Nv
 		dst := make([]byte, dstSize)
 		cmd.setU64(offZcNvlistDst, uint64(uintptr(unsafe.Pointer(&dst[0]))))
 		cmd.setU64(offZcNvlistDstSize, dstSize)
+		noteDst(dst)
 
 		err = h.ioctl(req, cmd)
 		runtime.KeepAlive(kaConf)

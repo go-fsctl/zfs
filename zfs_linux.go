@@ -167,5 +167,5 @@ func (h *Handle) ObjsetStats(name string) (Nvlist, error) {
 // Available reports whether /dev/zfs is present and openable. Integration
 // tests use this to skip when not running inside the ZFS guest.
 func Available() bool {
-	return unix.Access("/dev/zfs", unix.R_OK) == nil
+	return unixAccess("/dev/zfs", unix.R_OK) == nil
 }
