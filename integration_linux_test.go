@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // These integration tests drive the live ZFS kernel via /dev/zfs. They are
@@ -795,4 +796,240 @@ func sha256File(t *testing.T, path string) string {
 		}
 	}
 	return string(out)
+}
+
+// TestIntegrationPoolAdmin exercises the pool-level admin operations added in
+// feat/pool-scrub-trim-vdev against the live kernel, cross-checking each with
+// the zpool CLI. It builds a fresh file-backed pool with three backing files:
+// one in the pool initially, the others used for vdev attach/replace.
+//
+// Run inside the guest as root:
+//
+//	sudo -E go test -run TestIntegrationPoolAdmin -v ./...
+func TestIntegrationPoolAdmin(t *testing.T) {
+	h := requireKernel(t)
+	defer h.Close()
+
+	if _, err := exec.LookPath("zpool"); err != nil {
+		t.Skip("zpool CLI not found; needed for cross-check")
+	}
+	dir := os.Getenv("ZFS_TEST_DIR")
+	if dir == "" {
+		dir = "/var/tmp"
+	}
+	const pool = "gofsctl_admpool"
+	d0 := filepath.Join(dir, "gofsctl_adm_d0.img")
+	d1 := filepath.Join(dir, "gofsctl_adm_d1.img")
+	d2 := filepath.Join(dir, "gofsctl_adm_d2.img")
+
+	run := func(name string, args ...string) string {
+		t.Helper()
+		out, err := exec.Command(name, args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s %v: %v\n%s", name, args, err, out)
+		}
+		return string(out)
+	}
+	status := func(args ...string) string {
+		t.Helper()
+		return run("zpool", append([]string{"status"}, args...)...)
+	}
+
+	// Fresh backing files and pool (CLI setup only).
+	_ = exec.Command("zpool", "destroy", pool).Run()
+	for _, p := range []string{d0, d1, d2} {
+		_ = os.Remove(p)
+		f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE, 0600)
+		if err != nil {
+			t.Skipf("cannot create backing file %s: %v", p, err)
+		}
+		if err := f.Truncate(512 << 20); err != nil { // 512 MiB each
+			f.Close()
+			t.Fatalf("truncate %s: %v", p, err)
+		}
+		f.Close()
+		defer os.Remove(p)
+	}
+	// Single-disk pool on d0 to start.
+	run("zpool", "create", "-f", pool, d0)
+	defer func() { _ = exec.Command("zpool", "destroy", pool).Run() }()
+
+	// Put some data in so a scrub has blocks to examine.
+	mnt := "/" + pool
+	for i := 0; i < 8; i++ {
+		fn := filepath.Join(mnt, "data", "f")
+		_ = os.MkdirAll(filepath.Join(mnt, "data"), 0755)
+		buf := bytes.Repeat([]byte{byte(i), 0xab, 0xcd}, 1<<20) // ~3 MiB each
+		if err := os.WriteFile(fn+string(rune('0'+i)), buf, 0644); err != nil {
+			t.Fatalf("write data: %v", err)
+		}
+	}
+	run("zpool", "sync", pool)
+
+	// ---------------------------------------------------------------
+	// Scrub: OUR ScrubStart -> `zpool status` shows scrub; OUR ScanStatus
+	// agrees; OUR ScrubStop cancels.
+	// ---------------------------------------------------------------
+	if err := h.ScrubStart(pool); err != nil {
+		t.Fatalf("OUR ScrubStart: %v", err)
+	}
+	st, err := h.ScanStatus(pool)
+	if err != nil {
+		t.Fatalf("OUR ScanStatus: %v", err)
+	}
+	if st.Func != ScanScrub {
+		t.Errorf("ScanStatus.Func = %v, want scrub", st.Func)
+	}
+	// State should be scanning or finished (a tiny pool can complete instantly).
+	if st.State != ScanStateScanning && st.State != ScanStateFinished {
+		t.Errorf("ScanStatus.State = %v, want scanning/finished", st.State)
+	}
+	scrubStatus := status()
+	if !strings.Contains(scrubStatus, "scrub") {
+		t.Errorf("`zpool status` does not mention scrub:\n%s", scrubStatus)
+	}
+	t.Logf("Scrub proof OK: OUR ScanStatus={func=%v state=%v examined=%d/%d %.1f%% errors=%d}\n`zpool status` scan line: %s",
+		st.Func, st.State, st.Examined, st.ToExamine, st.Percent(), st.Errors, scanLine(scrubStatus))
+
+	// Cancel (no-op if already finished; ScrubStop tolerates that).
+	if err := h.ScrubStop(pool); err != nil {
+		t.Fatalf("OUR ScrubStop: %v", err)
+	}
+	t.Logf("ScrubStop proof OK (scrub canceled/no-op)")
+
+	// ---------------------------------------------------------------
+	// Trim: OUR TrimPool(start) -> `zpool status -t` shows trim state.
+	// ---------------------------------------------------------------
+	if err := h.TrimPool(pool, nil, 0, false, POOL_TRIM_START); err != nil {
+		// File vdevs support manual trim on 2.2.x; a hard failure is a real bug.
+		t.Fatalf("OUR TrimPool(start): %v", err)
+	}
+	trimStatus := status("-t")
+	low := strings.ToLower(trimStatus)
+	if !strings.Contains(low, "trim") && !strings.Contains(low, "untrimmed") {
+		t.Errorf("`zpool status -t` does not mention trim:\n%s", trimStatus)
+	}
+	t.Logf("Trim proof OK: `zpool status -t` trim line: %s", trimLine(trimStatus))
+	_ = h.TrimPool(pool, nil, 0, false, POOL_TRIM_CANCEL) // best-effort cleanup
+
+	// ---------------------------------------------------------------
+	// Initialize: OUR InitializePool(start) -> `zpool status -i` shows it;
+	// cancel works.
+	// ---------------------------------------------------------------
+	if err := h.InitializePool(pool, nil, POOL_INITIALIZE_START); err != nil {
+		t.Fatalf("OUR InitializePool(start): %v", err)
+	}
+	initStatus := status("-i")
+	if !strings.Contains(strings.ToLower(initStatus), "initial") {
+		t.Errorf("`zpool status -i` does not mention initializing:\n%s", initStatus)
+	}
+	t.Logf("Initialize proof OK: `zpool status -i` init line: %s", initLine(initStatus))
+	if err := h.InitializePool(pool, nil, POOL_INITIALIZE_CANCEL); err != nil {
+		t.Fatalf("OUR InitializePool(cancel): %v", err)
+	}
+	t.Logf("Initialize cancel proof OK")
+
+	// ---------------------------------------------------------------
+	// VdevAttach: turn the single-disk pool into a mirror by attaching d1
+	// to d0 -> `zpool status` shows mirror (+ resilver). OUR VdevDetach
+	// removes it -> back to single.
+	// ---------------------------------------------------------------
+	if err := h.VdevAttach(pool, d0, d1, false); err != nil {
+		t.Fatalf("OUR VdevAttach(%s -> %s): %v", d0, d1, err)
+	}
+	// Wait briefly for the config to reflect the mirror + any resilver.
+	mirrorStatus := waitFor(t, 10, func() (string, bool) {
+		s := status()
+		return s, strings.Contains(s, "mirror")
+	})
+	if !strings.Contains(mirrorStatus, "mirror") {
+		t.Errorf("after VdevAttach `zpool status` has no mirror:\n%s", mirrorStatus)
+	}
+	if !strings.Contains(mirrorStatus, filepath.Base(d1)) && !strings.Contains(mirrorStatus, d1) {
+		t.Errorf("after VdevAttach `zpool status` does not list %s:\n%s", d1, mirrorStatus)
+	}
+	t.Logf("VdevAttach->mirror proof OK:\n%s", mirrorStatus)
+
+	// Detach d1 -> back to single-disk.
+	// Allow any in-flight resilver to settle first (detach of a resilvering
+	// device can return EBUSY).
+	waitResilverDone(t, h, pool)
+	if err := h.VdevDetach(pool, d1); err != nil {
+		t.Fatalf("OUR VdevDetach(%s): %v", d1, err)
+	}
+	singleStatus := waitFor(t, 10, func() (string, bool) {
+		s := status()
+		return s, !strings.Contains(s, "mirror")
+	})
+	if strings.Contains(singleStatus, "mirror") {
+		t.Errorf("after VdevDetach pool still a mirror:\n%s", singleStatus)
+	}
+	t.Logf("VdevDetach->single proof OK:\n%s", singleStatus)
+
+	// ---------------------------------------------------------------
+	// VdevAttach(replace=true): replace d0 with d2. After resilver the pool
+	// runs on d2 and d0 is gone.
+	// ---------------------------------------------------------------
+	if err := h.VdevAttach(pool, d0, d2, true); err != nil {
+		t.Fatalf("OUR VdevAttach(replace %s -> %s): %v", d0, d2, err)
+	}
+	waitResilverDone(t, h, pool)
+	replStatus := waitFor(t, 15, func() (string, bool) {
+		s := status()
+		return s, strings.Contains(s, filepath.Base(d2)) && !strings.Contains(s, filepath.Base(d0))
+	})
+	if !strings.Contains(replStatus, filepath.Base(d2)) {
+		t.Errorf("after replace `zpool status` does not list %s:\n%s", d2, replStatus)
+	}
+	if strings.Contains(replStatus, filepath.Base(d0)) {
+		t.Errorf("after replace `zpool status` still lists old device %s:\n%s", d0, replStatus)
+	}
+	t.Logf("VdevAttach(replace) proof OK:\n%s", replStatus)
+}
+
+// scanLine returns the line of `zpool status` output mentioning scan/scrub.
+func scanLine(s string) string { return grepLine(s, "scan") }
+
+// trimLine returns the `zpool status -t` line mentioning trim.
+func trimLine(s string) string { return grepLine(s, "trim") }
+
+// initLine returns the `zpool status -i` line mentioning initial.
+func initLine(s string) string { return grepLine(s, "initial") }
+
+func grepLine(s, sub string) string {
+	low := strings.ToLower(sub)
+	for _, ln := range strings.Split(s, "\n") {
+		if strings.Contains(strings.ToLower(ln), low) {
+			return strings.TrimSpace(ln)
+		}
+	}
+	return "(none)"
+}
+
+// waitFor polls fn up to attempts times (~200ms apart) until it returns true,
+// returning the last observed value.
+func waitFor(t *testing.T, attempts int, fn func() (string, bool)) string {
+	t.Helper()
+	var last string
+	for i := 0; i < attempts; i++ {
+		s, ok := fn()
+		last = s
+		if ok {
+			return s
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return last
+}
+
+// waitResilverDone polls OUR ScanStatus until no resilver/scrub is scanning.
+func waitResilverDone(t *testing.T, h *Handle, pool string) {
+	t.Helper()
+	for i := 0; i < 50; i++ {
+		st, err := h.ScanStatus(pool)
+		if err != nil || !st.Scanning() {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }

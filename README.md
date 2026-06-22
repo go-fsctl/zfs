@@ -85,6 +85,23 @@ err = h.Send("tank/ds2@s1", out, zfs.SendOptions{})              // ZFS_IOC_SEND
 in, _ := os.Open("snap.stream")
 br, err := h.Receive("tank/restored@s1", in, zfs.RecvOptions{})  // ZFS_IOC_RECV_NEW
 // br.ToName / br.ToGuid / br.Type come from the stream's DRR_BEGIN record.
+
+// POOL admin: SCRUB / TRIM / INITIALIZE and VDEV management.
+err = h.ScrubStart("tank")                        // ZFS_IOC_POOL_SCAN (scrub)
+st, err := h.ScanStatus("tank")                   // ZFS_IOC_POOL_STATS -> scan_stats
+// st.Func / st.State / st.Percent() / st.Errors mirror `zpool status`.
+err = h.ScrubStop("tank")                         // cancel an in-progress scan
+err = h.ResilverStart("tank")                     // ZFS_IOC_POOL_SCAN (resilver)
+
+err = h.TrimPool("tank", nil, 0, false, zfs.POOL_TRIM_START)        // ZFS_IOC_POOL_TRIM
+err = h.InitializePool("tank", nil, zfs.POOL_INITIALIZE_START)      // ZFS_IOC_POOL_INITIALIZE
+// nil vdevs = whole pool; pass device/file paths (or guids) to target specific vdevs.
+
+err = h.VdevAttach("tank", "/var/tmp/disk0.img", "/var/tmp/disk1.img", false) // single -> mirror
+err = h.VdevDetach("tank", "/var/tmp/disk1.img")                   // mirror -> single
+err = h.VdevAttach("tank", "/var/tmp/disk0.img", "/var/tmp/disk2.img", true)  // replace (resilver)
+state, err := h.VdevOffline("tank", "/var/tmp/disk2.img")          // ZFS_IOC_VDEV_SET_STATE
+state, err = h.VdevOnline("tank", "/var/tmp/disk2.img")
 ```
 
 `SetProp` takes the kernel's native value type per property: a `uint64` enum
@@ -133,6 +150,14 @@ nv, err := zfs.DecodeNative(b)
 | Change wrapping key  | `ZFS_IOC_CHANGE_KEY`    | write (wkeydata) |
 | Send (replication)   | `ZFS_IOC_SEND_NEW`      | write (fd+nvl) |
 | Receive (replication)| `ZFS_IOC_RECV_NEW`      | write (fd+nvl) |
+| Scrub / resilver     | `ZFS_IOC_POOL_SCAN`     | write          |
+| Scan status          | `ZFS_IOC_POOL_STATS`    | read (decode)  |
+| Trim                 | `ZFS_IOC_POOL_TRIM`     | write (encode) |
+| Initialize           | `ZFS_IOC_POOL_INITIALIZE` | write (encode) |
+| Attach / replace vdev| `ZFS_IOC_VDEV_ATTACH`   | write (encode) |
+| Detach vdev          | `ZFS_IOC_VDEV_DETACH`   | write          |
+| Online / offline vdev| `ZFS_IOC_VDEV_SET_STATE`| write          |
+| Reopen vdevs         | `ZFS_IOC_POOL_REOPEN`   | write (nvl)    |
 
 `PoolCreate` packs the bare root vdev tree (`{type:"root", children:[…]}`) into
 `zc_nvlist_conf` — exactly what the kernel hands to `spa_create()` as its
@@ -174,6 +199,16 @@ XDR on-disk label is not yet implemented, so it takes a caller-supplied config.
   the kernel consumes the rest of the stream. Stream bytes are never produced
   or parsed in Go. `send_recv.go` holds the platform-neutral option/record
   types and `DRR_BEGIN` decoding.
+- **`scan_linux.go`** — pool admin: `ScanPool`/`ScrubStart`/`ScrubStop`/
+  `ScrubPause`/`ResilverStart` over `ZFS_IOC_POOL_SCAN` (func in `zc_cookie`,
+  pause/resume in `zc_flags`); `ScanStatus` decodes the `scan_stats`
+  `pool_scan_stat_t` array from the live `ZFS_IOC_POOL_STATS` config;
+  `TrimPool`/`InitializePool` over the new-style `ZFS_IOC_POOL_TRIM`/
+  `_INITIALIZE` (command + per-vdev-guid map innvl); `VdevAttach`/`VdevDetach`/
+  `VdevSetState` (online/offline) over the legacy `ZFS_IOC_VDEV_*` ioctls,
+  resolving device paths to vdev guids from the pool config. `scan.go` holds the
+  platform-neutral `ScanStatus`/`ScanFunc`/`ScanState` types, the `scan_stats`
+  array decoder, and the vdev-tree guid walkers.
 - **`vdev.go`** — platform-neutral `Vdev` tree → config nvlist rendering.
 
 ## Testing
