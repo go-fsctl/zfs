@@ -127,5 +127,55 @@ func (h *Handle) GetBookmarks(fs string) (map[string]Nvlist, error) { return nil
 // DestroyBookmarks is unsupported off Linux.
 func (h *Handle) DestroyBookmarks(bookmarks ...string) error { return ErrUnsupported }
 
+// ScanPool is unsupported off Linux.
+func (h *Handle) ScanPool(pool string, fn ScanFunc, cmd ScanCmd) error { return ErrUnsupported }
+
+// ScrubStart is unsupported off Linux.
+func (h *Handle) ScrubStart(pool string) error { return ErrUnsupported }
+
+// ScrubStop is unsupported off Linux.
+func (h *Handle) ScrubStop(pool string) error { return ErrUnsupported }
+
+// ScrubPause is unsupported off Linux.
+func (h *Handle) ScrubPause(pool string) error { return ErrUnsupported }
+
+// ResilverStart is unsupported off Linux.
+func (h *Handle) ResilverStart(pool string) error { return ErrUnsupported }
+
+// ScanStatus is unsupported off Linux.
+func (h *Handle) ScanStatus(pool string) (ScanStatus, error) { return ScanStatus{}, ErrUnsupported }
+
+// TrimPool is unsupported off Linux.
+func (h *Handle) TrimPool(pool string, vdevs []string, rate uint64, secure bool, cmd uint64) error {
+	return ErrUnsupported
+}
+
+// InitializePool is unsupported off Linux.
+func (h *Handle) InitializePool(pool string, vdevs []string, cmd uint64) error {
+	return ErrUnsupported
+}
+
+// VdevAttach is unsupported off Linux.
+func (h *Handle) VdevAttach(pool, existingVdev, newVdev string, replace bool) error {
+	return ErrUnsupported
+}
+
+// VdevDetach is unsupported off Linux.
+func (h *Handle) VdevDetach(pool, vdev string) error { return ErrUnsupported }
+
+// VdevSetState is unsupported off Linux.
+func (h *Handle) VdevSetState(pool, vdev string, newState uint64, flags uint64) (uint64, error) {
+	return 0, ErrUnsupported
+}
+
+// VdevOnline is unsupported off Linux.
+func (h *Handle) VdevOnline(pool, vdev string) (uint64, error) { return 0, ErrUnsupported }
+
+// VdevOffline is unsupported off Linux.
+func (h *Handle) VdevOffline(pool, vdev string) (uint64, error) { return 0, ErrUnsupported }
+
+// VdevReopen is unsupported off Linux.
+func (h *Handle) VdevReopen(pool string, scrubRestart bool) error { return ErrUnsupported }
+
 // Available reports false off Linux.
 func Available() bool { return false }

@@ -30,6 +30,10 @@ const (
 	ZFS_IOC_POOL_CONFIGS      = zfsIocFirst + 0x04 // 0x5a04
 	ZFS_IOC_POOL_STATS        = zfsIocFirst + 0x05 // 0x5a05
 	ZFS_IOC_POOL_TRYIMPORT    = zfsIocFirst + 0x06 // 0x5a06
+	ZFS_IOC_POOL_SCAN         = zfsIocFirst + 0x07 // 0x5a07 (scrub/resilver)
+	ZFS_IOC_VDEV_SET_STATE    = zfsIocFirst + 0x0d // 0x5a0d (online/offline)
+	ZFS_IOC_VDEV_ATTACH       = zfsIocFirst + 0x0e // 0x5a0e (attach/replace)
+	ZFS_IOC_VDEV_DETACH       = zfsIocFirst + 0x0f // 0x5a0f
 	ZFS_IOC_OBJSET_STATS      = zfsIocFirst + 0x12 // 0x5a12
 	ZFS_IOC_DATASET_LIST_NEXT = zfsIocFirst + 0x14 // 0x5a14
 	ZFS_IOC_SET_PROP          = zfsIocFirst + 0x16 // 0x5a16
@@ -56,6 +60,89 @@ const (
 	ZFS_IOC_LOAD_KEY          = zfsIocFirst + 0x49 // 0x5a49 (lzc_load_key)
 	ZFS_IOC_UNLOAD_KEY        = zfsIocFirst + 0x4a // 0x5a4a (lzc_unload_key)
 	ZFS_IOC_CHANGE_KEY        = zfsIocFirst + 0x4b // 0x5a4b (lzc_change_key)
+	ZFS_IOC_POOL_REOPEN       = zfsIocFirst + 0x3d // 0x5a3d (lzc_reopen)
+	ZFS_IOC_POOL_INITIALIZE   = zfsIocFirst + 0x4f // 0x5a4f (lzc_initialize)
+	ZFS_IOC_POOL_TRIM         = zfsIocFirst + 0x50 // 0x5a50 (lzc_trim)
+)
+
+// zc_simple is a uint8 field (offset 13668 in the 2.2.2 zfs_cmd_t). It is the
+// "rebuild" flag read by zfs_ioc_vdev_attach (sequential resilver). We default
+// it to 0 (normal healing resilver). Confirmed via offsetof on the guest.
+const offZcSimple = 13668
+
+// pool_scan_func_t (sys/fs/zfs.h) — written into zc_cookie for
+// ZFS_IOC_POOL_SCAN. POOL_SCAN_NONE cancels an in-progress scan.
+const (
+	POOL_SCAN_NONE     = 0
+	POOL_SCAN_SCRUB    = 1
+	POOL_SCAN_RESILVER = 2
+)
+
+// pool_scrub_cmd_t (sys/fs/zfs.h) — written into zc_flags for
+// ZFS_IOC_POOL_SCAN. NORMAL begins/resumes; PAUSE pauses an active scrub.
+const (
+	POOL_SCRUB_NORMAL = 0
+	POOL_SCRUB_PAUSE  = 1
+)
+
+// dsl_scan_state_t (sys/fs/zfs.h) — the pss_state field of pool_scan_stat_t.
+const (
+	DSS_NONE     = 0
+	DSS_SCANNING = 1
+	DSS_FINISHED = 2
+	DSS_CANCELED = 3
+)
+
+// pool_initialize_func_t (sys/fs/zfs.h) — the ZPOOL_INITIALIZE_COMMAND value.
+const (
+	POOL_INITIALIZE_START   = 0
+	POOL_INITIALIZE_CANCEL  = 1
+	POOL_INITIALIZE_SUSPEND = 2
+	POOL_INITIALIZE_UNINIT  = 3
+)
+
+// pool_trim_func_t (sys/fs/zfs.h) — the ZPOOL_TRIM_COMMAND value.
+const (
+	POOL_TRIM_START   = 0
+	POOL_TRIM_CANCEL  = 1
+	POOL_TRIM_SUSPEND = 2
+)
+
+// vdev_state_t (sys/fs/zfs.h) — written into zc_cookie for
+// ZFS_IOC_VDEV_SET_STATE to request a new state. VDEV_STATE_HEALTHY is the
+// "online" request value (VDEV_STATE_ONLINE is an alias for it).
+const (
+	VDEV_STATE_UNKNOWN   = 0
+	VDEV_STATE_CLOSED    = 1
+	VDEV_STATE_OFFLINE   = 2
+	VDEV_STATE_REMOVED   = 3
+	VDEV_STATE_CANT_OPEN = 4
+	VDEV_STATE_FAULTED   = 5
+	VDEV_STATE_DEGRADED  = 6
+	VDEV_STATE_HEALTHY   = 7
+	VDEV_STATE_ONLINE    = VDEV_STATE_HEALTHY
+)
+
+// innvl key names for the new-style pool ops (sys/fs/zfs.h).
+const (
+	ZPOOL_INITIALIZE_COMMAND = "initialize_command"
+	ZPOOL_INITIALIZE_VDEVS   = "initialize_vdevs"
+
+	ZPOOL_TRIM_COMMAND = "trim_command"
+	ZPOOL_TRIM_VDEVS   = "trim_vdevs"
+	ZPOOL_TRIM_RATE    = "trim_rate"
+	ZPOOL_TRIM_SECURE  = "trim_secure"
+)
+
+// ZPOOL_CONFIG_SCAN_STATS is the vdev_tree-root nvlist key under which the
+// kernel reports the pool_scan_stat_t as a uint64 array (read via
+// nvlist_lookup_uint64_array). It is populated on the config returned by
+// ZFS_IOC_POOL_CONFIGS / ZFS_IOC_POOL_STATS. ZPOOL_CONFIG_VDEV_STATS is the
+// per-vdev vdev_stat_t (also a uint64 array). Verified against the guest's
+// sys/fs/zfs.h.
+const (
+	ZPOOL_CONFIG_SCAN_STATS = "scan_stats"
+	ZPOOL_CONFIG_VDEV_STATS = "vdev_stats"
 )
 
 // ZPOOL_HIDDEN_ARGS is the nested-nvlist key (in the regular zc_nvlist_src

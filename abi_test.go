@@ -56,6 +56,7 @@ func TestZfsCmdSizeAndOffsets(t *testing.T) {
 		{"zc_flags", offZcFlags, 13652},
 		{"zc_cleanup_fd", offZcCleanupFd, 13664},
 		{"zc_zoneid", offZcZoneid, 13736},
+		{"zc_simple", offZcSimple, 13668},
 	} {
 		if c.got != c.want {
 			t.Errorf("offset %s = %d, want %d", c.name, c.got, c.want)
@@ -104,6 +105,13 @@ func TestIocNumbers(t *testing.T) {
 		{"LOAD_KEY", ZFS_IOC_LOAD_KEY, 0x5a49},
 		{"UNLOAD_KEY", ZFS_IOC_UNLOAD_KEY, 0x5a4a},
 		{"CHANGE_KEY", ZFS_IOC_CHANGE_KEY, 0x5a4b},
+		{"POOL_SCAN", ZFS_IOC_POOL_SCAN, 0x5a07},
+		{"VDEV_SET_STATE", ZFS_IOC_VDEV_SET_STATE, 0x5a0d},
+		{"VDEV_ATTACH", ZFS_IOC_VDEV_ATTACH, 0x5a0e},
+		{"VDEV_DETACH", ZFS_IOC_VDEV_DETACH, 0x5a0f},
+		{"POOL_REOPEN", ZFS_IOC_POOL_REOPEN, 0x5a3d},
+		{"POOL_INITIALIZE", ZFS_IOC_POOL_INITIALIZE, 0x5a4f},
+		{"POOL_TRIM", ZFS_IOC_POOL_TRIM, 0x5a50},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s = %#x, want %#x", c.name, c.got, c.want)
