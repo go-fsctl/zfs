@@ -116,9 +116,13 @@ func TestRealIoctlSeam(t *testing.T) {
 	// Success: FIGETBSZ (request 0x2) on a regular file returns the block size
 	// with errno 0 non-root, exercising realIoctl's success branch. (The whole
 	// zfsCmd buffer is the ioctl argument; only its first int is written.)
-	cmd := &zfsCmd{}
-	if err := realIoctl(h, 0x2 /* FIGETBSZ */, cmd); err != nil {
-		t.Fatalf("realIoctl FIGETBSZ: %v", err)
+	// Skipped under -test.short because QEMU user-mode emulation returns ENOTTY
+	// for FIGETBSZ; the native CI job (no -short) covers this branch.
+	if !testing.Short() {
+		cmd := &zfsCmd{}
+		if err := realIoctl(h, 0x2 /* FIGETBSZ */, cmd); err != nil {
+			t.Fatalf("realIoctl FIGETBSZ: %v", err)
+		}
 	}
 
 	// Error: a bogus request number yields an errno.
