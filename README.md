@@ -103,6 +103,21 @@ err = h.VdevDetach("tank", "/var/tmp/disk1.img")                   // mirror -> 
 err = h.VdevAttach("tank", "/var/tmp/disk0.img", "/var/tmp/disk2.img", true)  // replace (resilver)
 state, err := h.VdevOffline("tank", "/var/tmp/disk2.img")          // ZFS_IOC_VDEV_SET_STATE
 state, err = h.VdevOnline("tank", "/var/tmp/disk2.img")
+
+// CHANNEL PROGRAMS: run a Lua zcp against a pool.
+ret, err := h.ChannelProgram("tank",                               // ZFS_IOC_CHANNEL_PROGRAM
+    `args = ...; return zfs.list.snapshots(args["fs"])`,
+    zfs.ChannelProgramOptions{Sync: false, Args: zfs.Nvlist{"fs": "tank/ds2"}})
+snaps, err := h.ListSnapshotsZCP("tank/ds2")       // convenience zcp wrapper -> []string
+
+// DIFF: changes between two snapshots (or snapshot -> live head).
+entries, err := h.Diff("tank/ds2@s1", "tank/ds2@s2")               // ZFS_IOC_DIFF
+// each entry: .Change (+,-,M,R), .Type (F,/,@,...), .Path, .OldPath (rename)
+
+// SPACE ACCOUNTING: per-uid/gid/project usage and quotas.
+used, err := h.UserSpace("tank/ds2", zfs.UserUsed)                 // ZFS_IOC_USERSPACE_MANY
+v, ok, err := h.UserSpaceByID("tank/ds2", zfs.UserUsed, 1000)      // single uid lookup
+err = h.SetUserQuota("tank/ds2", zfs.UserQuota, "1000", 50<<20)    // ZFS_IOC_SET_PROP (userquota@)
 ```
 
 `SetProp` takes the kernel's native value type per property: a `uint64` enum
@@ -159,6 +174,10 @@ nv, err := zfs.DecodeNative(b)
 | Detach vdev          | `ZFS_IOC_VDEV_DETACH`   | write          |
 | Online / offline vdev| `ZFS_IOC_VDEV_SET_STATE`| write          |
 | Reopen vdevs         | `ZFS_IOC_POOL_REOPEN`   | write (nvl)    |
+| Channel program (zcp)| `ZFS_IOC_CHANNEL_PROGRAM` | write (nvl)  |
+| Diff snapshots       | `ZFS_IOC_DIFF`          | read (fd+stat) |
+| User/group space     | `ZFS_IOC_USERSPACE_MANY`| read (structs) |
+| Set user/group quota | `ZFS_IOC_SET_PROP`      | write (encode) |
 
 `PoolCreate` packs the bare root vdev tree (`{type:"root", children:[…]}`) into
 `zc_nvlist_conf` — exactly what the kernel hands to `spa_create()` as its
@@ -210,6 +229,29 @@ XDR on-disk label is not yet implemented, so it takes a caller-supplied config.
   resolving device paths to vdev guids from the pool config. `scan.go` holds the
   platform-neutral `ScanStatus`/`ScanFunc`/`ScanState` types, the `scan_stats`
   array decoder, and the vdev-tree guid walkers.
+- **`channel_linux.go`** — `ChannelProgram` over `ZFS_IOC_CHANNEL_PROGRAM`
+  (the `lzc_channel_program` ABI): the Lua source, args table, sync flag and
+  instruction/memory limits go in the input nvlist (`program`/`arg`/`sync`/
+  `instrlimit`/`memlimit`); the program's return value comes back as
+  `outnvl["return"]`, a runtime/syntax failure as `outnvl["error"]` alongside
+  `ECHRNG`/`EINVAL`. `ListSnapshotsZCP` is a convenience wrapper. `channel.go`
+  holds the platform-neutral options type.
+- **`diff_linux.go`** — `Diff` over `ZFS_IOC_DIFF`: the kernel streams 24-byte
+  `dmu_diff_record_t` object ranges over a pipe (write fd in `zc_cookie`,
+  `zc_name`=tosnap, `zc_value`=fromsnap), read in a goroutine — the same
+  pipe+goroutine shape as `Send`, but with the kernel as the writer. Each
+  in-use object is resolved to a path+stat in both snapshots via
+  `ZFS_IOC_OBJ_TO_STATS` and classified (+/-/M/R) by generation, link-count and
+  ctime exactly as libzfs `write_inuse_diffs_one` does; freed-object ranges are
+  walked with `ZFS_IOC_NEXT_OBJ`. `diff.go` holds the platform-neutral
+  `DiffEntry`/`DiffChange`/`FileType` types and the mode→type mapping.
+- **`space_linux.go`** — `UserSpace` over `ZFS_IOC_USERSPACE_MANY`: a legacy
+  zc-based ioctl that writes a packed array of 272-byte `zfs_useracct_t` structs
+  into `zc_nvlist_dst` (property selector in `zc_objset_type`, resumable ZAP
+  cursor in `zc_cookie`), looped until exhausted. `SetUserQuota` routes a
+  `userquota@<who>` property through `ZFS_IOC_SET_PROP` (the same path
+  `zfs set userquota@…` uses). `space.go` holds the `SpaceProp`/`SpaceEntry`
+  types and the quota-property prefixes.
 - **`vdev.go`** — platform-neutral `Vdev` tree → config nvlist rendering.
 
 ## Testing

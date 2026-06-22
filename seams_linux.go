@@ -29,6 +29,11 @@ var (
 	osOpenFile = os.OpenFile
 	unixAccess = unix.Access
 
+	// osPipe creates the diff record pipe (read end, write end). Seamed so the
+	// Diff pipe-failure branch and the record-reader path are testable without
+	// a live ZFS_IOC_DIFF.
+	osPipe = os.Pipe
+
 	ioctlFn = realIoctl
 
 	// encodeNative is the nvlist packer used by the zfs_cmd_t src/conf helpers.
