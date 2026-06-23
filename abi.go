@@ -414,7 +414,9 @@ const (
 	offZsCtime1 = offZcStat + 32 // uint64 ctime nanoseconds
 )
 
-// The metadata-object number boundary: the kernel diff stream reports object
-// numbers; the first user object is ZDIFF_OBJECT_MIN. Objects below it are ZPL
-// metadata and are not reported as path changes (matching libzfs).
-const ZDIFF_OBJECT_MIN = 16
+// NB: the kernel diff stream reports object numbers starting from 0 with no
+// lower bound (module/zfs/dmu_diff.c). User files routinely occupy very low
+// object numbers (2, 3, …), so the diff classifier must NOT filter on object
+// number; ZPL system objects (master node, delete queue, shares dir) are
+// instead skipped because ZFS_IOC_OBJ_TO_STATS resolves them to no path. This
+// matches libzfs's write_inuse_diffs, which iterates every object in the range.

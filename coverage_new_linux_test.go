@@ -330,7 +330,7 @@ func TestDiffClassifyInuse(t *testing.T) {
 	const dir = sIFDIR | 0o755
 	df := &diffFake{
 		t: t,
-		// object 5 is below ZDIFF_OBJECT_MIN (skipped); 20..33 are user objects.
+		// object 5 has no stat (resolves to absent -> skipped); 20..33 are user objects.
 		ranges: []diffRange{{typ: DDR_INUSE, first: 5, last: 33}},
 		from: map[uint64]*objStat{
 			20: {gen: 1, mode: reg, links: 1, ctime0: 100, path: "/a"},     // modified (ctime differs, same path)
@@ -520,13 +520,13 @@ func TestDiffToSnapStatError(t *testing.T) {
 	}
 }
 
-// TestDiffFreeRangeBranches covers the DDR_FREE loop: an object below
-// ZDIFF_OBJECT_MIN (skipped), an absent object (skipped), a reported removal,
-// and finally ESRCH ending the walk.
+// TestDiffFreeRangeBranches covers the DDR_FREE loop: two absent objects
+// (skipped because OBJ_TO_STATS returns ENOENT), a reported removal, and
+// finally ESRCH ending the walk.
 func TestDiffFreeRangeBranches(t *testing.T) {
 	defer snapshotSeams()()
 	const reg = sIFREG | 0o644
-	// NEXT_OBJ yields 8 (below MIN), 19 (absent), 22 (removed), then ESRCH.
+	// NEXT_OBJ yields 8 (absent), 19 (absent), 22 (removed), then ESRCH.
 	seq := []uint64{8, 19, 22}
 	idx := 0
 	ioctlFn = func(_ *Handle, req uintptr, cmd *zfsCmd) error {

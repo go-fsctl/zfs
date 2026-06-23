@@ -168,9 +168,12 @@ type objStat struct {
 //   - same gen, different ctime, diff path   => Renamed
 //   - different gen                          => Removed(from) + Added(to)
 func (h *Handle) classifyInuseObj(fromSnap, toSnap string, o uint64) ([]DiffEntry, error) {
-	if o < ZDIFF_OBJECT_MIN {
-		return nil, nil // ZPL metadata object, not a user path
-	}
+	// Unlike a naive "object number < N" filter, libzfs's write_inuse_diffs
+	// processes every object in the range and relies on ZFS_IOC_OBJ_TO_STATS to
+	// report which objects are real ZPL paths: a ZPL system object (master node,
+	// delete queue, shares dir, …) resolves to no path (ENOENT/ENOTSUP/ESTALE),
+	// surfacing here as present=false, and is skipped below. User files can have
+	// very low object numbers (2, 3, …), so we must NOT skip on object number.
 	fsb, ferr := h.objToStats(fromSnap, o)
 	if ferr != nil {
 		return nil, ferr
@@ -244,9 +247,6 @@ func (h *Handle) classifyFreeRange(fromSnap string, dr diffRange) ([]DiffEntry, 
 		obj = next
 		if obj > dr.last {
 			break
-		}
-		if obj < ZDIFF_OBJECT_MIN {
-			continue
 		}
 		sb, serr := h.objToStats(fromSnap, obj)
 		if serr != nil {
