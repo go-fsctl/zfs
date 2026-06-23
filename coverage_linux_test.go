@@ -35,9 +35,11 @@ var lastDst []byte
 // It also installs the dstHook capture for the duration of the test.
 func snapshotSeams() func() {
 	a, b, c, d, e := osOpenFile, unixAccess, ioctlFn, dstHook, encodeNative
+	p := osPipe
 	dstHook = func(dst []byte) { lastDst = dst }
 	return func() {
 		osOpenFile, unixAccess, ioctlFn, dstHook, encodeNative = a, b, c, d, e
+		osPipe = p
 		lastDst = nil
 	}
 }
@@ -1270,5 +1272,26 @@ func TestCallNewNameDecodeError(t *testing.T) {
 	}
 	if _, err := okHandle().callNewName(ZFS_IOC_GET_HOLDS, "tank/ds@s", nil); err == nil {
 		t.Fatal("want decode error")
+	}
+
+	// err != nil AND dst undecodable: the ioctl errno wins, the decode error is
+	// dropped (the error path returns err, not the decode failure).
+	ioctlFn = func(_ *Handle, _ uintptr, cmd *zfsCmd) error {
+		lastDst[0] = nvEncodeXDR + 9
+		cmd.setU64(offZcNvlistDstFilled, 1)
+		return errInjected
+	}
+	if _, err := okHandle().callNewName(ZFS_IOC_GET_HOLDS, "tank/ds@s", nil); err != errInjected {
+		t.Fatalf("want injected errno, got %v", err)
+	}
+
+	// err != nil AND dst decodable: both the outnvl and the errno are returned.
+	ioctlFn = func(_ *Handle, _ uintptr, cmd *zfsCmd) error {
+		putDst(t, cmd, Nvlist{"error": "detail"})
+		return errInjected
+	}
+	out, err := okHandle().callNewName(ZFS_IOC_GET_HOLDS, "tank/ds@s", nil)
+	if err != errInjected || out["error"] != "detail" {
+		t.Fatalf("want errno + decoded outnvl, got out=%v err=%v", out, err)
 	}
 }

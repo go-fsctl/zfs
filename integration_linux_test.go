@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1031,5 +1033,222 @@ func waitResilverDone(t *testing.T, h *Handle, pool string) {
 			return
 		}
 		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// TestIntegrationChannelDiffUserspace drives the channel-program, diff and
+// userspace ioctls against a freshly-created loopback pool and cross-checks the
+// results against the zfs/zpool CLIs. Skipped without /dev/zfs (and without the
+// CLIs for the cross-check).
+func TestIntegrationChannelDiffUserspace(t *testing.T) {
+	h := requireKernel(t)
+	defer h.Close()
+
+	if _, err := exec.LookPath("zfs"); err != nil {
+		t.Skip("zfs CLI not found; needed for cross-check")
+	}
+	dir := os.Getenv("ZFS_TEST_DIR")
+	if dir == "" {
+		dir = "/var/tmp"
+	}
+	const pool = "gofsctl_cdupool"
+	img := filepath.Join(dir, "gofsctl_cdu_d0.img")
+
+	run := func(name string, args ...string) string {
+		t.Helper()
+		out, err := exec.Command(name, args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s %v: %v\n%s", name, args, err, out)
+		}
+		return string(out)
+	}
+
+	_ = exec.Command("zpool", "destroy", pool).Run()
+	_ = os.Remove(img)
+	f, err := os.OpenFile(img, os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		t.Skipf("cannot create backing file %s: %v", img, err)
+	}
+	if err := f.Truncate(512 << 20); err != nil {
+		f.Close()
+		t.Fatalf("truncate: %v", err)
+	}
+	f.Close()
+	defer os.Remove(img)
+	run("zpool", "create", "-f", pool, img)
+	defer func() { _ = exec.Command("zpool", "destroy", pool).Run() }()
+
+	fs := pool + "/fsa"
+	run("zfs", "create", fs)
+	mnt := "/" + fs
+
+	// ---- Proof 1: ChannelProgram (list snapshots via zcp) ----
+	run("zfs", "snapshot", fs+"@s1")
+	run("zfs", "snapshot", fs+"@s2")
+
+	// OUR ChannelProgram running a property-get Lua snippet. zfs.get_prop
+	// returns (value, source); we keep just the value so the program returns a
+	// single value (zcp cannot return multiple).
+	res, err := h.ChannelProgram(pool,
+		`args = ...; local v = zfs.get_prop(args["ds"], "compression"); return v`,
+		ChannelProgramOptions{Sync: false, Args: Nvlist{"ds": fs}})
+	if err != nil {
+		t.Fatalf("ChannelProgram get_prop: %v", err)
+	}
+	t.Logf("OUR ChannelProgram zfs.get_prop(%s, compression) -> %v", fs, res)
+
+	// OUR ListSnapshotsZCP convenience wrapper.
+	got, err := h.ListSnapshotsZCP(fs)
+	if err != nil {
+		t.Fatalf("ListSnapshotsZCP: %v", err)
+	}
+	sort.Strings(got)
+	want := []string{fs + "@s1", fs + "@s2"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("ListSnapshotsZCP = %v, want %v", got, want)
+	}
+	// Cross-check against `zfs list -t snap`.
+	cli := run("zfs", "list", "-H", "-t", "snapshot", "-o", "name", "-r", fs)
+	t.Logf("OUR ListSnapshotsZCP(%s) = %v\nCLI `zfs list -t snap`:\n%s", fs, got, cli)
+	for _, snap := range want {
+		if !strings.Contains(cli, snap) {
+			t.Errorf("CLI snapshot list missing %s", snap)
+		}
+	}
+	// Cross-check OUR zcp against the real `zfs program` (best-effort: the CLI's
+	// channel-program path is not always present/permitted, so a failure here is
+	// logged but not fatal — OUR result is already cross-checked against
+	// `zfs list -t snap` above).
+	tmpLua := filepath.Join(dir, "gofsctl_list.lua")
+	_ = os.WriteFile(tmpLua, []byte(`args = ...
+local r = {}
+local i = 1
+for s in zfs.list.snapshots(args["fs"]) do r[i] = s; i = i + 1 end
+return r
+`), 0644)
+	defer os.Remove(tmpLua)
+	if prog, perr := exec.Command("zfs", "program", pool, tmpLua, fs).CombinedOutput(); perr != nil {
+		t.Logf("CLI `zfs program` cross-check skipped: %v\n%s", perr, prog)
+	} else {
+		t.Logf("CLI `zfs program` snapshot list:\n%s", prog)
+		for _, snap := range want {
+			if !strings.Contains(string(prog), snap) {
+				t.Errorf("CLI zfs program output missing %s", snap)
+			}
+		}
+	}
+
+	// ---- Proof 2: Diff ----
+	// Modify the filesystem between two snapshots: add, remove, modify, rename.
+	run("zfs", "snapshot", fs+"@d1")
+	if err := os.WriteFile(filepath.Join(mnt, "added.txt"), []byte("new\n"), 0644); err != nil {
+		t.Fatalf("write added: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(mnt, "keep.txt"), []byte("v1\n"), 0644); err != nil {
+		t.Fatalf("write keep: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(mnt, "old.txt"), []byte("orig\n"), 0644); err != nil {
+		t.Fatalf("write old: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(mnt, "gone.txt"), []byte("bye\n"), 0644); err != nil {
+		t.Fatalf("write gone: %v", err)
+	}
+	run("zfs", "snapshot", fs+"@d2")
+	// Now mutate for the d2->d3 diff: modify keep, rename old->renamed, rm gone.
+	if err := os.WriteFile(filepath.Join(mnt, "keep.txt"), []byte("v2-modified\n"), 0644); err != nil {
+		t.Fatalf("modify keep: %v", err)
+	}
+	if err := os.Rename(filepath.Join(mnt, "old.txt"), filepath.Join(mnt, "renamed.txt")); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if err := os.Remove(filepath.Join(mnt, "gone.txt")); err != nil {
+		t.Fatalf("remove gone: %v", err)
+	}
+	run("zfs", "snapshot", fs+"@d3")
+
+	// OUR Diff(d2, d3).
+	entries, err := h.Diff(fs+"@d2", fs+"@d3")
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	ourDiff := map[string]DiffChange{}
+	for _, e := range entries {
+		base := filepath.Base(e.Path)
+		ourDiff[base] = e.Change
+		t.Logf("OUR Diff: %s %s %s (old=%s)", e.Change, base, e.Path, e.OldPath)
+	}
+	// Cross-check against `zfs diff`.
+	cliDiff := run("zfs", "diff", fs+"@d2", fs+"@d3")
+	t.Logf("CLI `zfs diff %s@d2 %s@d3`:\n%s", fs, fs, cliDiff)
+
+	if c, ok := ourDiff["keep.txt"]; !ok || c != Modified {
+		t.Errorf("Diff: keep.txt = %v, want M", c)
+	}
+	if c, ok := ourDiff["gone.txt"]; !ok || c != Removed {
+		t.Errorf("Diff: gone.txt = %v, want -", c)
+	}
+	if c, ok := ourDiff["renamed.txt"]; !ok || c != Renamed {
+		t.Errorf("Diff: renamed.txt = %v, want R", c)
+	}
+	// CLI markers should agree (R for rename, M for keep, - for gone).
+	if !strings.Contains(cliDiff, "gone.txt") || !strings.Contains(cliDiff, "renamed.txt") ||
+		!strings.Contains(cliDiff, "keep.txt") {
+		t.Errorf("CLI diff missing expected paths")
+	}
+
+	// ---- Proof 3: UserSpace ----
+	// chown files to two uids so userused@ has multiple entries.
+	run("chown", "1000:1000", filepath.Join(mnt, "added.txt"))
+	run("chown", "2000:2000", filepath.Join(mnt, "keep.txt"))
+	run("zpool", "sync", pool)
+
+	entriesU, err := h.UserSpace(fs, UserUsed)
+	if err != nil {
+		t.Fatalf("UserSpace: %v", err)
+	}
+	ourUsed := map[uint32]uint64{}
+	for _, e := range entriesU {
+		ourUsed[e.RID] = e.Value
+		t.Logf("OUR UserSpace userused@%d = %d bytes (domain=%q)", e.RID, e.Value, e.Domain)
+	}
+	// Cross-check against `zfs userspace`.
+	cliUS := run("zfs", "userspace", "-H", "-p", "-o", "name,used", fs)
+	t.Logf("CLI `zfs userspace %s`:\n%s", fs, cliUS)
+	for _, line := range strings.Split(strings.TrimSpace(cliUS), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		// name is like "1000" / "POSIX User 1000" depending on resolution; parse trailing digits.
+		name := fields[0]
+		used, perr := strconv.ParseUint(fields[len(fields)-1], 10, 64)
+		if perr != nil {
+			continue
+		}
+		id, ierr := strconv.ParseUint(name, 10, 32)
+		if ierr != nil {
+			continue
+		}
+		if got := ourUsed[uint32(id)]; got != used {
+			t.Errorf("UserSpace uid %d: OUR %d != CLI %d", id, got, used)
+		}
+	}
+	if _, ok := ourUsed[1000]; !ok {
+		t.Errorf("UserSpace: uid 1000 not reported")
+	}
+
+	// OUR UserSpaceByID convenience.
+	if v, ok, err := h.UserSpaceByID(fs, UserUsed, 1000); err != nil || !ok {
+		t.Errorf("UserSpaceByID(1000) = %d ok=%v err=%v", v, ok, err)
+	}
+
+	// ---- Proof 4: SetUserQuota ----
+	if err := h.SetUserQuota(fs, UserQuota, "1000", 50<<20); err != nil {
+		t.Fatalf("SetUserQuota: %v", err)
+	}
+	q := run("zfs", "get", "-H", "-p", "-o", "value", "userquota@1000", fs)
+	t.Logf("OUR SetUserQuota(userquota@1000=50M); CLI `zfs get userquota@1000` = %s", strings.TrimSpace(q))
+	if got := strings.TrimSpace(q); got != strconv.Itoa(50<<20) {
+		t.Errorf("userquota@1000 = %s, want %d", got, 50<<20)
 	}
 }

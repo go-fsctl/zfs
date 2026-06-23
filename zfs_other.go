@@ -177,5 +177,31 @@ func (h *Handle) VdevOffline(pool, vdev string) (uint64, error) { return 0, ErrU
 // VdevReopen is unsupported off Linux.
 func (h *Handle) VdevReopen(pool string, scrubRestart bool) error { return ErrUnsupported }
 
+// ChannelProgram is unsupported off Linux.
+func (h *Handle) ChannelProgram(pool, script string, opts ChannelProgramOptions) (Nvlist, error) {
+	return nil, ErrUnsupported
+}
+
+// ListSnapshotsZCP is unsupported off Linux.
+func (h *Handle) ListSnapshotsZCP(fs string) ([]string, error) { return nil, ErrUnsupported }
+
+// Diff is unsupported off Linux.
+func (h *Handle) Diff(fromSnap, toSnapOrFs string) ([]DiffEntry, error) { return nil, ErrUnsupported }
+
+// UserSpace is unsupported off Linux.
+func (h *Handle) UserSpace(fs string, prop SpaceProp) ([]SpaceEntry, error) {
+	return nil, ErrUnsupported
+}
+
+// UserSpaceByID is unsupported off Linux.
+func (h *Handle) UserSpaceByID(fs string, prop SpaceProp, id uint32) (uint64, bool, error) {
+	return 0, false, ErrUnsupported
+}
+
+// SetUserQuota is unsupported off Linux.
+func (h *Handle) SetUserQuota(fs string, prop SpaceProp, who string, quota uint64) error {
+	return ErrUnsupported
+}
+
 // Available reports false off Linux.
 func Available() bool { return false }
