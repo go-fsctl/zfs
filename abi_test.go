@@ -112,10 +112,61 @@ func TestIocNumbers(t *testing.T) {
 		{"POOL_REOPEN", ZFS_IOC_POOL_REOPEN, 0x5a3d},
 		{"POOL_INITIALIZE", ZFS_IOC_POOL_INITIALIZE, 0x5a4f},
 		{"POOL_TRIM", ZFS_IOC_POOL_TRIM, 0x5a50},
+		{"CHANNEL_PROGRAM", ZFS_IOC_CHANNEL_PROGRAM, 0x5a48},
+		{"DIFF", ZFS_IOC_DIFF, 0x5a36},
+		{"USERSPACE_MANY", ZFS_IOC_USERSPACE_MANY, 0x5a2e},
+		{"USERSPACE_UPGRADE", ZFS_IOC_USERSPACE_UPGRADE, 0x5a2f},
+		{"OBJ_TO_STATS", ZFS_IOC_OBJ_TO_STATS, 0x5a38},
+		{"OBJ_TO_PATH", ZFS_IOC_OBJ_TO_PATH, 0x5a25},
+		{"NEXT_OBJ", ZFS_IOC_NEXT_OBJ, 0x5a35},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s = %#x, want %#x", c.name, c.got, c.want)
 		}
+	}
+}
+
+// TestDiffUserspaceAbi pins the layout constants the diff and userspace paths
+// depend on, matching the OpenZFS 2.2.2 structs in the target guest:
+//
+//	sizeof(dmu_diff_record_t)  24   { uint64 ddr_type, ddr_first, ddr_last }
+//	sizeof(zfs_useracct_t)     272  { char zu_domain[256]; uint32 zu_rid,
+//	                                  zu_pad; uint64 zu_space }
+//	sizeof(zfs_stat_t)         40   { uint64 zs_gen, zs_mode, zs_links,
+//	                                  zs_ctime[2] }
+//	offsetof(zfs_cmd_t, zc_stat) 13696 (== zc_zoneid 13736 - 40)
+//	ddr_type bit flags: DDR_NONE 0x1, DDR_INUSE 0x2, DDR_FREE 0x4
+func TestDiffUserspaceAbi(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"sizeofDiffRecord", sizeofDiffRecord, 24},
+		{"offDdrType", offDdrType, 0},
+		{"offDdrFirst", offDdrFirst, 8},
+		{"offDdrLast", offDdrLast, 16},
+		{"sizeofUseracct", sizeofUseracct, 272},
+		{"offZuDomain", offZuDomain, 0},
+		{"offZuRid", offZuRid, 256},
+		{"offZuSpace", offZuSpace, 264},
+		{"offZcStat", offZcStat, 13696},
+		{"offZsGen", offZsGen, 13696},
+		{"offZsMode", offZsMode, 13704},
+		{"offZsLinks", offZsLinks, 13712},
+		{"offZsCtime0", offZsCtime0, 13720},
+		{"offZsCtime1", offZsCtime1, 13728},
+		{"DDR_NONE", DDR_NONE, 0x1},
+		{"DDR_INUSE", DDR_INUSE, 0x2},
+		{"DDR_FREE", DDR_FREE, 0x4},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s = %d, want %d", c.name, c.got, c.want)
+		}
+	}
+	// zc_stat must sit immediately before zc_zoneid (40-byte zfs_stat_t).
+	if offZcStat+40 != offZcZoneid {
+		t.Errorf("zc_stat(%d)+40 = %d, want zc_zoneid %d", offZcStat, offZcStat+40, offZcZoneid)
 	}
 }
 

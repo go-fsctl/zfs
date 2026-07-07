@@ -37,6 +37,13 @@ const (
 	ZFS_IOC_OBJSET_STATS      = zfsIocFirst + 0x12 // 0x5a12
 	ZFS_IOC_DATASET_LIST_NEXT = zfsIocFirst + 0x14 // 0x5a14
 	ZFS_IOC_SET_PROP          = zfsIocFirst + 0x16 // 0x5a16
+	ZFS_IOC_OBJ_TO_PATH       = zfsIocFirst + 0x25 // 0x5a25 (diff: obj -> path)
+	ZFS_IOC_OBJ_TO_STATS      = zfsIocFirst + 0x38 // 0x5a38 (diff: obj -> zfs_stat_t)
+	ZFS_IOC_NEXT_OBJ          = zfsIocFirst + 0x35 // 0x5a35 (diff: next allocated obj)
+	ZFS_IOC_USERSPACE_MANY    = zfsIocFirst + 0x2e // 0x5a2e (user/group/project space)
+	ZFS_IOC_USERSPACE_UPGRADE = zfsIocFirst + 0x2f // 0x5a2f
+	ZFS_IOC_DIFF              = zfsIocFirst + 0x36 // 0x5a36 (zfs diff over a pipe fd)
+	ZFS_IOC_CHANNEL_PROGRAM   = zfsIocFirst + 0x48 // 0x5a48 (lzc_channel_program)
 	ZFS_IOC_CREATE            = zfsIocFirst + 0x17 // 0x5a17
 	ZFS_IOC_DESTROY           = zfsIocFirst + 0x18 // 0x5a18
 	ZFS_IOC_ROLLBACK          = zfsIocFirst + 0x19 // 0x5a19 (lzc_rollback)
@@ -317,3 +324,99 @@ const (
 	offDrrBeginFromG  = 48 // uint64 drr_begin.drr_fromguid
 	offDrrBeginToName = 56 // char[MAXNAMELEN] drr_begin.drr_toname
 )
+
+// Channel-program (ZFS_IOC_CHANNEL_PROGRAM) innvl/outnvl keys and limits,
+// verified against the guest's include/sys/fs/zfs.h (ZCP_ARG_* / ZCP_RET_* /
+// ZCP_DEFAULT_* macros) and the libzfs_core lzc_channel_program_impl(), which
+// builds the innvl as { program(string), arg(any), sync(bool), instrlimit
+// (uint64), memlimit(uint64) } and reads the result from outnvl["return"] (or
+// outnvl["error"] on a runtime error). The kernel's zfs_keys_channel_program
+// marks "program" and "arg" required, the rest optional.
+const (
+	ZCP_ARG_PROGRAM    = "program"
+	ZCP_ARG_ARGLIST    = "arg"
+	ZCP_ARG_SYNC       = "sync"
+	ZCP_ARG_INSTRLIMIT = "instrlimit"
+	ZCP_ARG_MEMLIMIT   = "memlimit"
+
+	ZCP_RET_RETURN = "return"
+	ZCP_RET_ERROR  = "error"
+
+	// ZCP_DEFAULT_INSTRLIMIT / ZCP_DEFAULT_MEMLIMIT match the kernel macros
+	// (10,000,000 Lua instructions / 10 MiB). Used when the caller passes 0.
+	ZCP_DEFAULT_INSTRLIMIT = 10 * 1000 * 1000
+	ZCP_DEFAULT_MEMLIMIT   = 10 * 1024 * 1024
+)
+
+// zfs_userquota_prop_t (sys/fs/zfs.h) — the property selector written into
+// zc_objset_type for ZFS_IOC_USERSPACE_MANY. The enum order is exactly as in
+// the guest header.
+const (
+	ZFS_PROP_USERUSED        = 0
+	ZFS_PROP_USERQUOTA       = 1
+	ZFS_PROP_GROUPUSED       = 2
+	ZFS_PROP_GROUPQUOTA      = 3
+	ZFS_PROP_USEROBJUSED     = 4
+	ZFS_PROP_USEROBJQUOTA    = 5
+	ZFS_PROP_GROUPOBJUSED    = 6
+	ZFS_PROP_GROUPOBJQUOTA   = 7
+	ZFS_PROP_PROJECTUSED     = 8
+	ZFS_PROP_PROJECTQUOTA    = 9
+	ZFS_PROP_PROJECTOBJUSED  = 10
+	ZFS_PROP_PROJECTOBJQUOTA = 11
+)
+
+// zfs_useracct_t layout (include/sys/zfs_ioctl.h), confirmed against the 2.2.2
+// source on the guest: { char zu_domain[256]; uint32 zu_rid; uint32 zu_pad;
+// uint64 zu_space; } == 272 bytes. ZFS_IOC_USERSPACE_MANY writes a packed
+// array of these into zc_nvlist_dst (a raw struct buffer, NOT an nvlist), with
+// zc_nvlist_dst_size = bytes filled and zc_cookie carrying the resumable ZAP
+// cursor across calls.
+const (
+	sizeofUseracct  = 272
+	offZuDomain     = 0   // char[256]
+	offZuRid        = 256 // uint32 (uid_t)
+	offZuSpace      = 264 // uint64 (8-aligned after rid+pad)
+	useracctDomainN = 256
+)
+
+// dmu_diff_record_t layout (include/sys/zfs_ioctl.h): three uint64s
+// { ddr_type, ddr_first, ddr_last } == 24 bytes. ZFS_IOC_DIFF streams these
+// over the write fd in zc_cookie (zc_name=fromsnap, zc_value=tosnap). ddr_type
+// distinguishes a range of FREE'd objects from a range of in-use (DATA)
+// objects; userland resolves each object to a path and stat to classify the
+// change, exactly as libzfs's zfs_show_diffs does.
+const (
+	sizeofDiffRecord = 24
+	offDdrType       = 0  // uint64
+	offDdrFirst      = 8  // uint64
+	offDdrLast       = 16 // uint64
+
+	// dmu_diff_record ddr_type values — bit flags from include/sys/zfs_ioctl.h
+	// (enum: DDR_NONE 0x1, DDR_INUSE 0x2, DDR_FREE 0x4). The kernel only ever
+	// writes DDR_INUSE or DDR_FREE records to the stream.
+	DDR_NONE  = 0x1
+	DDR_INUSE = 0x2
+	DDR_FREE  = 0x4
+)
+
+// zfs_stat_t layout (include/sys/zfs_stat.h): { uint64 zs_gen; uint64 zs_mode;
+// uint64 zs_links; uint64 zs_ctime[2]; } == 40 bytes, returned in the zfs_cmd_t
+// zc_stat field by ZFS_IOC_OBJ_TO_STATS (with the path in zc_value). zc_stat
+// sits immediately before zc_zoneid (offset 13736); 13736-40 == 13696, which is
+// 8-aligned. Verified against the 2.2.2 zfs_cmd_t in the guest source.
+const (
+	offZcStat   = 13696
+	offZsGen    = offZcStat + 0  // uint64 generation (txg the object was created)
+	offZsMode   = offZcStat + 8  // uint64 mode (includes S_IF* type bits)
+	offZsLinks  = offZcStat + 16 // uint64 link count
+	offZsCtime0 = offZcStat + 24 // uint64 ctime seconds
+	offZsCtime1 = offZcStat + 32 // uint64 ctime nanoseconds
+)
+
+// NB: the kernel diff stream reports object numbers starting from 0 with no
+// lower bound (module/zfs/dmu_diff.c). User files routinely occupy very low
+// object numbers (2, 3, …), so the diff classifier must NOT filter on object
+// number; ZPL system objects (master node, delete queue, shares dir) are
+// instead skipped because ZFS_IOC_OBJ_TO_STATS resolves them to no path. This
+// matches libzfs's write_inuse_diffs, which iterates every object in the range.

@@ -223,17 +223,22 @@ func (h *Handle) callNewName(req uintptr, name string, innvl Nvlist) (Nvlist, er
 			}
 			continue
 		}
-		if err != nil {
-			return nil, err
-		}
+		// On both success and a non-ENOMEM error the kernel may have filled the
+		// outnvl (e.g. ZFS_IOC_CHANNEL_PROGRAM reports a Lua runtime/syntax
+		// failure's details under "error" alongside ECHRNG/EINVAL). Decode it
+		// when present and return it together with err; callers that don't care
+		// about an error's outnvl simply ignore the returned nvlist.
 		if cmd.getU64(offZcNvlistDstFilled) != 0 {
 			out, derr := DecodeNative(dst)
 			if derr != nil {
+				if err != nil {
+					return nil, err
+				}
 				return nil, fmt.Errorf("decode outnvl: %w", derr)
 			}
-			return out, nil
+			return out, err
 		}
-		return nil, nil
+		return nil, err
 	}
 	return nil, fmt.Errorf("outnvl buffer kept growing")
 }
