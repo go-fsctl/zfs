@@ -39,6 +39,8 @@ pp, err := h.PoolGetProps("tank")                 // ZFS_IOC_POOL_GET_PROPS
 err = h.PoolExport("tank", false, false)          // ZFS_IOC_POOL_EXPORT
 _, err = h.PoolImport("tank", cfgs["tank"])       // ZFS_IOC_POOL_IMPORT
 err = h.PoolDestroy("tank")                       // ZFS_IOC_POOL_DESTROY
+names, err := h.PoolNames()                       // convenience: PoolConfigs() keys only
+live, err := h.PoolStats("tank")                  // ZFS_IOC_POOL_STATS (fresh config incl. scan/vdev stats)
 
 // DATASET lifecycle:
 err = h.CreateFilesystem("tank/ds1")              // ZFS_IOC_CREATE
@@ -52,6 +54,7 @@ err = h.Destroy("tank/ds2", false)                // ZFS_IOC_DESTROY
 // CLONE / ROLLBACK / HOLD / BOOKMARK:
 err = h.Clone("tank/ds2@s1", "tank/clone", nil)   // ZFS_IOC_CLONE
 target, err := h.Rollback("tank/ds2")             // ZFS_IOC_ROLLBACK (-> latest snapshot)
+target, err = h.RollbackTo("tank/ds2", "tank/ds2@s1") // ZFS_IOC_ROLLBACK (-> a specific snapshot)
 err = h.Hold("tank/ds2@s1", "keep", false)        // ZFS_IOC_HOLD (blocks destroy w/ EBUSY)
 holds, err := h.Holds("tank/ds2@s1")              // ZFS_IOC_GET_HOLDS (tag -> timestamp)
 err = h.Release("tank/ds2@s1", "keep")            // ZFS_IOC_RELEASE
@@ -95,6 +98,7 @@ err = h.ScrubStart("tank")                        // ZFS_IOC_POOL_SCAN (scrub)
 st, err := h.ScanStatus("tank")                   // ZFS_IOC_POOL_STATS -> scan_stats
 // st.Func / st.State / st.Percent() / st.Errors mirror `zpool status`.
 err = h.ScrubStop("tank")                         // cancel an in-progress scan
+err = h.ScrubPause("tank")                        // pause an in-progress scrub
 err = h.ResilverStart("tank")                     // ZFS_IOC_POOL_SCAN (resilver)
 
 err = h.TrimPool("tank", nil, 0, false, zfs.POOL_TRIM_START)        // ZFS_IOC_POOL_TRIM
@@ -106,6 +110,7 @@ err = h.VdevDetach("tank", "/var/tmp/disk1.img")                   // mirror -> 
 err = h.VdevAttach("tank", "/var/tmp/disk0.img", "/var/tmp/disk2.img", true)  // replace (resilver)
 state, err := h.VdevOffline("tank", "/var/tmp/disk2.img")          // ZFS_IOC_VDEV_SET_STATE
 state, err = h.VdevOnline("tank", "/var/tmp/disk2.img")
+err = h.VdevReopen("tank", false)                  // ZFS_IOC_POOL_REOPEN (re-probe all vdevs)
 
 // CHANNEL PROGRAMS: run a Lua zcp against a pool.
 ret, err := h.ChannelProgram("tank",                               // ZFS_IOC_CHANNEL_PROGRAM
@@ -169,7 +174,8 @@ nv, err := zfs.DecodeNative(b)
 | Change wrapping key  | `ZFS_IOC_CHANGE_KEY`    | write (wkeydata) |
 | Send (replication)   | `ZFS_IOC_SEND_NEW`      | write (fd+nvl) |
 | Receive (replication)| `ZFS_IOC_RECV_NEW`      | write (fd+nvl) |
-| Scrub / resilver     | `ZFS_IOC_POOL_SCAN`     | write          |
+| Scrub / resilver / pause | `ZFS_IOC_POOL_SCAN` | write          |
+| Pool stats (live config) | `ZFS_IOC_POOL_STATS` | read (decode) |
 | Scan status          | `ZFS_IOC_POOL_STATS`    | read (decode)  |
 | Trim                 | `ZFS_IOC_POOL_TRIM`     | write (encode) |
 | Initialize           | `ZFS_IOC_POOL_INITIALIZE` | write (encode) |
@@ -186,9 +192,16 @@ nv, err := zfs.DecodeNative(b)
 `zc_nvlist_conf` — exactly what the kernel hands to `spa_create()` as its
 `nvroot`. `PoolImport` takes a full pool config (carrying `pool_guid` + the
 vdev tree), e.g. one captured from `PoolConfigs` while the pool is still
-imported. `PoolTryImport` is wired to `ZFS_IOC_POOL_TRYIMPORT` but the kernel
-requires a tryconfig already assembled from on-disk vdev labels; decoding the
-XDR on-disk label is not yet implemented, so it takes a caller-supplied config.
+imported. `PoolNames` is a `PoolConfigs` convenience returning just the
+imported pool names. `PoolTryImport` is wired to `ZFS_IOC_POOL_TRYIMPORT` but
+the kernel requires a tryconfig already assembled from on-disk vdev labels;
+decoding the XDR on-disk label is not yet implemented, so it takes a
+caller-supplied config. `PoolStats` issues `ZFS_IOC_POOL_STATS` for a pool's
+freshly generated config (unlike the cached `ZFS_IOC_POOL_CONFIGS` snapshot,
+this one carries the live `scan_stats`/`vdev_stats` arrays `zpool status`
+reads); `ScanStatus` is a typed wrapper over it. `ObjsetStats` is the
+undecoded counterpart of `GetProps`, returning the raw `ZFS_IOC_OBJSET_STATS`
+properties nvlist.
 
 ## How it works
 
