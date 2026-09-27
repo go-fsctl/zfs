@@ -5,7 +5,9 @@
 package zfs
 
 import (
+	"os/user"
 	"slices"
+	"strconv"
 	"testing"
 )
 
@@ -80,6 +82,40 @@ func TestUserQuotaNameAlwaysCarriesTheDash(t *testing.T) {
 	}
 }
 
+// TestUserQuotaResolvesANameLikeLibzfsDoes. The kernel never sees a name --
+// userquota_propname_decode calls getpwnam before the ioctl -- so if this
+// package does not resolve it, nothing downstream will.
+//
+// The identity is the CURRENT user rather than "root": a group called root
+// exists on Linux and not on macOS, and a test that only runs where its
+// fixture happens to exist is a test that measures the machine.
+func TestUserQuotaResolvesANameLikeLibzfsDoes(t *testing.T) {
+	me, err := user.Current()
+	if err != nil {
+		t.Skipf("no current user to resolve: %v", err)
+	}
+	if me.Username != "" {
+		_, val, err := encodeUserQuota(UserQuota, me.Username, 1)
+		if err != nil {
+			t.Fatalf("encodeUserQuota(%q): %v", me.Username, err)
+		}
+		want, _ := strconv.ParseUint(me.Uid, 10, 64)
+		if val[1] != want {
+			t.Errorf("rid = %d, want uid %d", val[1], want)
+		}
+	}
+	if g, err := user.LookupGroupId(me.Gid); err == nil {
+		_, val, err := encodeUserQuota(GroupQuota, g.Name, 1)
+		if err != nil {
+			t.Fatalf("encodeUserQuota(group %q): %v", g.Name, err)
+		}
+		want, _ := strconv.ParseUint(me.Gid, 10, 64)
+		if val[1] != want {
+			t.Errorf("rid = %d, want gid %d", val[1], want)
+		}
+	}
+}
+
 // And the refusals, because a wrong identity silently setting someone else's
 // quota is worse than an error.
 func TestUserQuotaRefusesWhatItCannotEncode(t *testing.T) {
@@ -91,5 +127,11 @@ func TestUserQuotaRefusesWhatItCannotEncode(t *testing.T) {
 	}
 	if _, _, err := encodeUserQuota(UserQuota, "no-such-user-here-4a7f", 1); err == nil {
 		t.Error("an unknown user name was accepted")
+	}
+	if _, _, err := encodeUserQuota(GroupQuota, "no-such-group-here-4a7f", 1); err == nil {
+		t.Error("an unknown group name was accepted")
+	}
+	if _, _, err := encodeUserQuota(UserQuota, "", 1); err == nil {
+		t.Error("an empty identity was accepted")
 	}
 }

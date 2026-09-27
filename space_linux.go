@@ -107,7 +107,7 @@ func (h *Handle) SetUserQuota(fs string, prop SpaceProp, who string, quota uint6
 		return fmt.Errorf("SetUserQuota %q: %w", fs, err)
 	}
 	if err := h.SetProp(fs, Nvlist{name: valary}); err != nil {
-		return fmt.Errorf("SetUserQuota %q %s%s=%d: %w", fs, prefixOf(prop), who, quota, err)
+		return fmt.Errorf("SetUserQuota %q %s (%s=%d): %w", fs, name, who, quota, err)
 	}
 	return nil
 }
