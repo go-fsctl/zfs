@@ -82,6 +82,22 @@ jobs:
           command -v zfs
           command -v zpool
 
+      # Three tests -- PoolConfigs, Snapshot, CreateFilesystem -- want a pool
+      # that is ALREADY imported, named by $ZFS_TEST_POOL (default
+      # "testpool"). They do not create it, and they said so on the first run:
+      #
+      #   imported pools: 0
+      #   pool "testpool" not found; got []
+      #
+      # That is the environment the validation host had and CI did not. A file
+      # vdev is a real pool.
+      - name: the pool those three tests assume
+        run: |
+          set -euxo pipefail
+          truncate -s 2G "$RUNNER_TEMP/testpool.img"
+          sudo zpool create -f testpool "$RUNNER_TEMP/testpool.img"
+          sudo zpool list testpool
+
       - name: the integration tests, as root
         run: |
           set -o pipefail

@@ -4,7 +4,11 @@
 
 package zfs
 
-import "fmt"
+import (
+	"fmt"
+	"os/user"
+	"strconv"
+)
 
 // SpaceProp selects which userspace/quota property ZFS_IOC_USERSPACE_MANY
 // reports. It maps directly onto zfs_userquota_prop_t and is written into
@@ -94,4 +98,67 @@ type SpaceEntry struct {
 	Domain string // SID domain ("" for a plain POSIX uid/gid/project id)
 	RID    uint32 // relative id: the uid/gid/project id for POSIX identities
 	Value  uint64 // bytes used / quota, or object count for *OBJ* props
+}
+
+func prefixOf(p SpaceProp) string { s, _ := p.quotaPrefix(); return s }
+
+// encodeUserQuota builds the property name and the three-element value the
+// kernel expects for a userquota@-family property. It is separate from
+// SetUserQuota so that the encoding -- which is the whole defect -- can be
+// checked without a pool.
+//
+// who is a decimal uid/gid/project id, or a user or group NAME. Resolving a
+// name is libzfs's job, not the kernel's: userquota_propname_decode calls
+// getpwnam before the ioctl, and nothing downstream of here would. Project
+// ids have no name space, so a non-numeric project identity is refused rather
+// than looked up in the wrong table.
+func encodeUserQuota(prop SpaceProp, who string, quota uint64) (string, []uint64, error) {
+	// ⛔ quotaPrefix answers for the read-only *USED properties too -- they
+	// have names, they are just not settable -- so it cannot be the settable
+	// check. That check used to live in SetUserQuota and this encoder was
+	// written trusting the prefix; a test caught it immediately. One
+	// definition, here, where the name is built.
+	switch prop {
+	case UserQuota, GroupQuota, ProjectQuota,
+		UserObjQuota, GroupObjQuota, ProjectObjQuota:
+	default:
+		return "", nil, fmt.Errorf("%s is not a settable quota property", prop)
+	}
+	if who == "" {
+		return "", nil, fmt.Errorf("empty identity")
+	}
+	prefix, ok := prop.quotaPrefix()
+	if !ok {
+		return "", nil, fmt.Errorf("%s has no property prefix", prop)
+	}
+	rid, err := resolveIdentity(prop, who)
+	if err != nil {
+		return "", nil, err
+	}
+	// "%s%llx-%s": the rid in hex, then the dash, then the domain -- empty for
+	// a POSIX identity, and the dash is NOT optional: strchr(propname, '-')
+	// returning NULL is one of the three ways the kernel answers EINVAL.
+	name := prefix + strconv.FormatUint(rid, 16) + "-"
+	return name, []uint64{uint64(prop), rid, quota}, nil
+}
+
+func resolveIdentity(prop SpaceProp, who string) (uint64, error) {
+	if rid, err := strconv.ParseUint(who, 10, 64); err == nil {
+		return rid, nil
+	}
+	switch prop {
+	case UserQuota, UserObjQuota:
+		u, err := user.Lookup(who)
+		if err != nil {
+			return 0, fmt.Errorf("no such user %q: %w", who, err)
+		}
+		return strconv.ParseUint(u.Uid, 10, 64)
+	case GroupQuota, GroupObjQuota:
+		g, err := user.LookupGroup(who)
+		if err != nil {
+			return 0, fmt.Errorf("no such group %q: %w", who, err)
+		}
+		return strconv.ParseUint(g.Gid, 10, 64)
+	}
+	return 0, fmt.Errorf("project identity %q is not a number, and project ids have no names", who)
 }

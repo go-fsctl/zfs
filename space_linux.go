@@ -77,24 +77,37 @@ func decodeUseracct(b []byte) SpaceEntry {
 // of the settable *QUOTA variants; the *USED variants are read-only and are
 // rejected.
 //
-// It routes through ZFS_IOC_SET_PROP with a single
-// { "<prefix><who>": <uint64 quota> } property, exactly as `zfs set
-// userquota@1000=10M` does (the kernel's property layer dispatches the
-// userquota@-prefixed name to zfs_set_userquota).
+// ⛔ It does NOT send { "userquota@1000": <uint64> }. That is what this
+// function used to do, and what its comment claimed `zfs set
+// userquota@1000=10M` does; it is not. The kernel's zfs_prop_set_userquota
+// reads
+//
+//	if ((dash = strchr(propname, '-')) == NULL ||
+//	    nvpair_value_uint64_array(pair, &valary, &vallen) != 0 ||
+//	    vallen != 3)
+//		return (SET_ERROR(EINVAL));
+//
+// so the name must carry a dash and the value must be a uint64 ARRAY of
+// exactly three. libzfs rewrites both before the ioctl (zfs_valid_proplist):
+//
+//	asprintf(&newpropname, "%s%llx-%s", prefix, (longlong_t)rid, domain);
+//	valary[0] = uqtype; valary[1] = rid; valary[2] = intval;
+//
+// Note the rid is in HEXADECIMAL and the domain, empty for a POSIX id, still
+// follows the dash. See encodeUserQuota.
+//
+// The defect was invisible until the integration suite ran against a real
+// pool for the first time, on 2026-09-27, and said
+//
+//	SetUserQuota "…/fsa" userquota@1000=52428800:
+//	ZFS_IOC_SET_PROP "…/fsa": invalid argument
 func (h *Handle) SetUserQuota(fs string, prop SpaceProp, who string, quota uint64) error {
-	switch prop {
-	case UserQuota, GroupQuota, ProjectQuota,
-		UserObjQuota, GroupObjQuota, ProjectObjQuota:
-	default:
-		return fmt.Errorf("SetUserQuota %q: %s is not a settable quota property", fs, prop)
+	name, valary, err := encodeUserQuota(prop, who, quota)
+	if err != nil {
+		return fmt.Errorf("SetUserQuota %q: %w", fs, err)
 	}
-	if who == "" {
-		return fmt.Errorf("SetUserQuota %q: empty identity", fs)
-	}
-	prefix, _ := prop.quotaPrefix()
-	name := prefix + who
-	if err := h.SetProp(fs, Nvlist{name: quota}); err != nil {
-		return fmt.Errorf("SetUserQuota %q %s=%d: %w", fs, name, quota, err)
+	if err := h.SetProp(fs, Nvlist{name: valary}); err != nil {
+		return fmt.Errorf("SetUserQuota %q %s%s=%d: %w", fs, prefixOf(prop), who, quota, err)
 	}
 	return nil
 }
