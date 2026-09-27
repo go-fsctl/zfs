@@ -89,14 +89,53 @@ func TestScanPoolBranches(t *testing.T) {
 		t.Fatal("want ECANCELED surfaced for cancel")
 	}
 
-	// ENOENT while pausing -> benign no-op.
-	ioctlFn = func(*Handle, uintptr, *zfsCmd) error { return unix.ENOENT }
+	// ⛔ ENOENT means two different things, and which one it is decides
+	// whether it may be swallowed:
+	//
+	//	 "there is no scan to pause or cancel"   -> a benign no-op
+	//	 "there is no such pool"                 -> a typo, and swallowing it
+	//	                                            makes ScrubStop("tnak")
+	//	                                            report success
+	//
+	// ScanPool tells them apart by asking PoolStats afterwards, so the fake
+	// below has to answer both calls: ENOENT for the scan, then the config.
+	enoentThenPool := func() {
+		n := 0
+		ioctlFn = func(_ *Handle, _ uintptr, cmd *zfsCmd) error {
+			n++
+			if n == 1 {
+				return unix.ENOENT
+			}
+			putDst(t, cmd, poolStatsConfig())
+			return nil
+		}
+	}
+
+	// ENOENT while pausing, pool present -> benign no-op.
+	enoentThenPool()
 	if err := okHandle().ScanPool("tank", ScanScrub, ScanPause); err != nil {
 		t.Fatalf("ENOENT pause should be no-op, got %v", err)
 	}
-	// ENOENT that is NOT a pause still surfaces.
+	// ENOENT while cancelling, pool present -> benign no-op. This is the case
+	// the first real integration run failed on: a tiny pool finishes its scrub
+	// before ScrubStop is reached, and the old condition (`fn != ScanNone`)
+	// excluded cancel exactly.
+	enoentThenPool()
+	if err := okHandle().ScanPool("tank", ScanNone, ScanNormal); err != nil {
+		t.Fatalf("ENOENT cancel should be no-op, got %v", err)
+	}
+	// ENOENT with NO SUCH POOL still surfaces, for both -- the whole reason
+	// the errno is checked against PoolStats rather than trusted.
+	ioctlFn = func(*Handle, uintptr, *zfsCmd) error { return unix.ENOENT }
+	if err := okHandle().ScanPool("tnak", ScanNone, ScanNormal); err == nil {
+		t.Fatal("cancel on a pool that does not exist reported success")
+	}
+	if err := okHandle().ScanPool("tnak", ScanScrub, ScanPause); err == nil {
+		t.Fatal("pause on a pool that does not exist reported success")
+	}
+	// ENOENT that is neither a pause nor a cancel still surfaces.
 	if err := okHandle().ScanPool("tank", ScanScrub, ScanNormal); err == nil {
-		t.Fatal("want ENOENT surfaced for non-pause")
+		t.Fatal("want ENOENT surfaced for a start")
 	}
 
 	// Success, verifying zc_cookie/zc_flags carry func/cmd.

@@ -42,6 +42,80 @@ jobs:
           awk -v c="$total" -v m="$COVERAGE_FLOOR" 'BEGIN { exit (c+0 >= m+0) ? 0 : 1 }' \
             || { echo "Coverage ${total}% below floor ${COVERAGE_FLOOR}%"; exit 1; }
 
+  # Can a GitHub runner hold a ZFS pool?
+  #
+  # Nine integration tests in integration_linux_test.go create a file-backed
+  # pool, write to it, send and receive it, and cross-check the result against
+  # the zfs(8) CLI. Not one has ever run here. They need /dev/zfs and root, and
+  # requireKernel skips BEFORE it looks for the CLI -- so installing
+  # zfsutils-linux on its own would only move the skip one line down, which is
+  # the thing that makes these lanes look fine.
+  #
+  # This job asserts /dev/zfs rather than skipping past it, so the answer is in
+  # the log either way.
+  kernel:
+    name: the pool the tests have never had
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+
+      - name: install OpenZFS and load the module
+        run: |
+          set -x
+          uname -r
+          sudo apt-get update -qq
+          # The module is not in the base image: zfsutils-linux is the CLI and
+          # linux-modules-extra-$(uname -r) is where Ubuntu ships zfs.ko.
+          sudo apt-get install -y -qq zfsutils-linux "linux-modules-extra-$(uname -r)" ||             sudo apt-get install -y -qq zfsutils-linux
+          sudo modprobe zfs || true
+          lsmod | grep -c zfs || true
+          ls -l /dev/zfs || true
+
+      # ⛔ An install is not a device node, in the same way an install is not a
+      # binary. Say which one is missing instead of letting the tests skip.
+      - name: /dev/zfs is really here
+        run: |
+          test -e /dev/zfs || { echo "::error::/dev/zfs absent; the integration tests cannot run on this image"; exit 1; }
+          command -v zfs
+          command -v zpool
+
+      # Three tests -- PoolConfigs, Snapshot, CreateFilesystem -- want a pool
+      # that is ALREADY imported, named by $ZFS_TEST_POOL (default
+      # "testpool"). They do not create it, and they said so on the first run:
+      #
+      #   imported pools: 0
+      #   pool "testpool" not found; got []
+      #
+      # That is the environment the validation host had and CI did not. A file
+      # vdev is a real pool.
+      - name: the pool those three tests assume
+        run: |
+          set -euxo pipefail
+          truncate -s 2G "$RUNNER_TEMP/testpool.img"
+          sudo zpool create -f testpool "$RUNNER_TEMP/testpool.img"
+          sudo zpool list testpool
+
+      - name: the integration tests, as root
+        run: |
+          set -o pipefail
+          sudo -E env "PATH=$PATH" ZFS_TEST_DIR=/var/tmp \
+            go test -count=1 -v -run TestIntegration ./... 2>&1 | tee kernel-output.txt
+
+      # requireKernel and the CLI check are the only two skip reasons here, and
+      # both mean the pool never existed. A skip is green, which is why this
+      # step is not optional.
+      - name: the kernel judges must have judged
+        run: |
+          if grep -qE "skipping kernel integration test|need root|zfs CLI not found" kernel-output.txt; then
+            echo "::error::a kernel integration test skipped; the pool was never built"
+            exit 1
+          fi
+          grep -q -- "--- PASS: TestIntegration" kernel-output.txt || {
+            echo "::error::no TestIntegration reported PASS"; exit 1; }
+
   emulated:
     name: emulated (${{ matrix.arch }})
     runs-on: ubuntu-latest

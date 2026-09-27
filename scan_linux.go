@@ -39,13 +39,29 @@ func (h *Handle) ScanPool(pool string, fn ScanFunc, cmd ScanCmd) error {
 	c.setU64(offZcFlags, uint64(cmd))
 	err := h.ioctl(ZFS_IOC_POOL_SCAN, c)
 	if err != nil {
-		// Resuming a paused scrub reports ECANCELED; pausing when none is
-		// running reports ENOENT. Both are benign no-ops, matching libzfs.
+		// Resuming a paused scrub reports ECANCELED. A benign no-op, as libzfs
+		// treats it.
 		if err == unix.ECANCELED && fn != ScanNone && cmd == ScanNormal {
 			return nil
 		}
-		if err == unix.ENOENT && fn != ScanNone && cmd == ScanPause {
-			return nil
+		// ⛔ ENOENT means "nothing to act on" for BOTH pause and cancel, and
+		// this only covered pause -- `fn != ScanNone` excluded the cancel case
+		// exactly. ScrubStop is documented to cancel any in-progress scan, and
+		// a tiny pool finishes its scrub before the next line of the caller
+		// runs, so the first integration run ever to reach it said
+		//
+		//	OUR ScrubStop: ZFS_IOC_POOL_SCAN "gofsctl_admpool" (func=none
+		//	cmd=0): no such file or directory
+		//
+		// ⛔⛔ And ENOENT is OVERLOADED: the same errno comes back for a pool
+		// that does not exist. Tolerating it blindly would make ScrubStop
+		// succeed on a typo, which is a worse defect than the one being fixed
+		// -- so ask whether the pool is there before deciding the errno meant
+		// "no scan running".
+		if err == unix.ENOENT && (cmd == ScanPause || fn == ScanNone) {
+			if _, statErr := h.PoolStats(pool); statErr == nil {
+				return nil
+			}
 		}
 		return fmt.Errorf("ZFS_IOC_POOL_SCAN %q (func=%s cmd=%d): %w", pool, fn, cmd, err)
 	}
