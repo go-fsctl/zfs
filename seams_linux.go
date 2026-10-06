@@ -36,6 +36,11 @@ var (
 
 	ioctlFn = realIoctl
 
+	// unixMount / unixUnmount are mount(2) / umount2(2) behind Mount and
+	// Unmount. Seamed because both need root and a live zfs module.
+	unixMount   = unix.Mount
+	unixUnmount = unix.Unmount
+
 	// encodeNative is the nvlist packer used by the zfs_cmd_t src/conf helpers.
 	// Seamed so the (otherwise input-validated, hence hard-to-provoke) encode
 	// failure branch of each builder is fault-injectable.

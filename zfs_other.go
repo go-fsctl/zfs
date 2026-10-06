@@ -37,6 +37,37 @@ func (h *Handle) Snapshot(pool string, fullnames []string) error { return ErrUns
 // CreateFilesystem is unsupported off Linux.
 func (h *Handle) CreateFilesystem(name string) error { return ErrUnsupported }
 
+// CreateFilesystemWithProps is unsupported off Linux.
+func (h *Handle) CreateFilesystemWithProps(name string, props Nvlist) error {
+	return ErrUnsupported
+}
+
+// SetQuota is unsupported off Linux.
+func (h *Handle) SetQuota(fs string, bytes uint64) error { return ErrUnsupported }
+
+// Quota is unsupported off Linux.
+func (h *Handle) Quota(fs string) (uint64, error) { return 0, ErrUnsupported }
+
+// SetRefquota is unsupported off Linux.
+func (h *Handle) SetRefquota(fs string, bytes uint64) error { return ErrUnsupported }
+
+// Refquota is unsupported off Linux.
+func (h *Handle) Refquota(fs string) (uint64, error) { return 0, ErrUnsupported }
+
+// SetUserProp is unsupported off Linux.
+func (h *Handle) SetUserProp(fs, prop, value string) error { return ErrUnsupported }
+
+// UserProp is unsupported off Linux.
+func (h *Handle) UserProp(fs, prop string) (value, source string, err error) {
+	return "", "", ErrUnsupported
+}
+
+// Mount is unsupported off Linux.
+func Mount(dataset, mountpoint string, flags uintptr, data string) error { return ErrUnsupported }
+
+// Unmount is unsupported off Linux.
+func Unmount(mountpoint string, flags int) error { return ErrUnsupported }
+
 // CreateEncrypted is unsupported off Linux.
 func (h *Handle) CreateEncrypted(name string, key []byte, props Nvlist) error {
 	return ErrUnsupported
