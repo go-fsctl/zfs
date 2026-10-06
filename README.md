@@ -51,6 +51,24 @@ err = h.Snapshot("tank", []string{"tank/ds2@s1"}) // ZFS_IOC_SNAPSHOT
 err = h.Destroy("tank/ds2@s1", false)             // ZFS_IOC_DESTROY
 err = h.Destroy("tank/ds2", false)                // ZFS_IOC_DESTROY
 
+// PROVISIONING: create WITH properties in one ZFS_IOC_CREATE, then mount it
+// yourself. Index props are uint64 (canmount), string props are strings
+// (mountpoint), user props (a name with ':') are strings.
+err = h.CreateFilesystemWithProps("tank/shares/a", zfs.Nvlist{
+	"refquota":        uint64(10 << 30),
+	"mountpoint":      zfs.ZFS_MOUNTPOINT_LEGACY,
+	"canmount":        uint64(zfs.ZFS_CANMOUNT_NOAUTO),
+	"fileshare:owner": "provisioner",
+})
+err = zfs.Mount("tank/shares/a", "/srv/shares/a", unix.MS_NOSUID|unix.MS_NODEV, "") // mount(2), fstype "zfs"
+err = zfs.Unmount("/srv/shares/a", 0)             // umount2(2)
+err = h.SetRefquota("tank/shares/a", 20<<30)      // 0 = none
+q, err := h.Refquota("tank/shares/a")
+err = h.SetQuota("tank/shares/a", 0)              // quota counts descendants + snapshots
+q, err = h.Quota("tank/shares/a")
+err = h.SetUserProp("tank/shares/a", "fileshare:share", "a")
+v, src, err := h.UserProp("tank/shares/a", "fileshare:owner") // src == "tank/shares/a" iff set locally
+
 // CLONE / ROLLBACK / HOLD / BOOKMARK:
 err = h.Clone("tank/ds2@s1", "tank/clone", nil)   // ZFS_IOC_CLONE
 target, err := h.Rollback("tank/ds2")             // ZFS_IOC_ROLLBACK (-> latest snapshot)
@@ -135,6 +153,43 @@ same conversion the `zpool`/`zfs` CLI performs before the ioctl. Enabling a
 feature-gated value (e.g. `compression=lz4`) requires that feature to be
 enabled on the pool at creation time.
 
+### Provisioning: what create-with-properties and mount guarantee
+
+Read from the OpenZFS sources, not assumed:
+
+- **One ioctl, two kernel steps.** `CreateFilesystemWithProps` sends
+  `lzc_create`'s nvlist (`{"type": int32, "props": {...}}`). In
+  `zfs_ioc_create` (`module/zfs/zfs_ioctl.c`) the kernel creates the objset
+  and *then* applies the properties with `zfs_set_prop_nvlist`; the source
+  notes that this is not atomic. If any property is rejected, the kernel
+  destroys the new dataset before returning, so a failed call leaves nothing
+  behind (unless that destroy itself fails, which is not reported); the
+  rejected property's name comes back in the outnvl and is included in the
+  error. A concurrent reader can see the dataset for an instant before its
+  properties. Nothing mounts it in that instant: the kernel never mounts on
+  create; `zfs create` mounts from userspace.
+- **Who auto-mounts, and how to stop it.** `zpool import` mounts every
+  filesystem except those with a `legacy`/`none` mountpoint or
+  `canmount=off` (`zfs_is_mountable`) or `canmount=noauto` (`zfs_iter_cb`),
+  both in `lib/libzfs/libzfs_mount.c`; `man7/zfsprops.7` says the same of
+  `zfs mount -a`, which `zfs-mount.service` runs at boot. A
+  provisioner that mounts datasets under its own root should create them with
+  `mountpoint=legacy` (or `canmount=noauto`), or they will also be mounted at
+  their `mountpoint` path.
+- **`Mount` is plain `mount(2)`** with fstype `zfs`, as libzfs's `do_mount`
+  does. The "non-legacy datasets can only be mounted by `zfs mount`" rule lives
+  in the `mount.zfs` helper (`cmd/mount_zfs.c`), not the kernel; the kernel
+  accepts and ignores the `zfsutil` option (`zpl_super.c`). `Mount` does not
+  create the mount point directory.
+- **User properties are inherited.** A child of a tagged dataset reports the
+  tag too (`man7/zfsprops.7`); `UserProp` returns the value's source (the
+  dataset it is set on), so an ownership check should compare it with the
+  dataset's own name. `SetUserProp`/`UserProp` refuse names that are not user
+  property names (`zfs_prop_user`: `[a-z0-9:._-]`, at least one `:`).
+- **Quota vs refquota.** `quota` bounds a dataset *and its descendants and
+  snapshots*; `refquota` bounds only what the dataset itself references —
+  the one a share's writers hit, as `EDQUOT`. Both read back as `0` for none.
+
 The native nvlist codec is exported and usable on any platform:
 
 ```go
@@ -155,6 +210,7 @@ nv, err := zfs.DecodeNative(b)
 | Destroy pool         | `ZFS_IOC_POOL_DESTROY`  | write          |
 | Create snapshot(s)   | `ZFS_IOC_SNAPSHOT`      | write (encode) |
 | Create filesystem    | `ZFS_IOC_CREATE`        | write (encode) |
+| Create fs with props | `ZFS_IOC_CREATE`        | write (encode, outnvl) |
 | Set properties       | `ZFS_IOC_SET_PROP`      | write (encode) |
 | Rename dataset       | `ZFS_IOC_RENAME`        | write          |
 | Destroy dataset/snap | `ZFS_IOC_DESTROY`       | write          |
@@ -220,6 +276,13 @@ properties nvlist.
 - **`zfs_linux.go`** — read paths + filesystem/snapshot create.
 - **`pool_linux.go`** — pool lifecycle (create/destroy/export/import).
 - **`dataset_linux.go`** — dataset destroy/rename/set-prop/get-props.
+- **`provision_linux.go`** — `CreateFilesystemWithProps` (one `ZFS_IOC_CREATE`
+  carrying the props, per-property errors decoded from the outnvl) and the
+  typed `Quota`/`Refquota`/`UserProp` getters and setters; `provision.go`
+  holds the platform-neutral `canmount`/`legacy` constants and the
+  `zfs_prop_user` name check.
+- **`mount_linux.go`** — `Mount`/`Unmount`: `mount(2)` with fstype `zfs` and
+  `umount2(2)`, behind the `unixMount`/`unixUnmount` seams.
 - **`lifecycle_linux.go`** — `Clone`/`Rollback`/`Hold`/`Release`/`Holds`/
   `Bookmark`/`GetBookmarks`/`DestroyBookmarks` over the `lzc_*` new-style ioctl
   ABI. Recursive holds enumerate descendant datasets via

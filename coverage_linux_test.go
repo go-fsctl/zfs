@@ -36,10 +36,12 @@ var lastDst []byte
 func snapshotSeams() func() {
 	a, b, c, d, e := osOpenFile, unixAccess, ioctlFn, dstHook, encodeNative
 	p := osPipe
+	m, u := unixMount, unixUnmount
 	dstHook = func(dst []byte) { lastDst = dst }
 	return func() {
 		osOpenFile, unixAccess, ioctlFn, dstHook, encodeNative = a, b, c, d, e
 		osPipe = p
+		unixMount, unixUnmount = m, u
 		lastDst = nil
 	}
 }
