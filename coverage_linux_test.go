@@ -398,8 +398,42 @@ func TestSetProp(t *testing.T) {
 		t.Fatal("want ioctl error")
 	}
 	ioctlFn = func(*Handle, uintptr, *zfsCmd) error { return nil }
-	if err := okHandle().SetProp("tank/ds", Nvlist{"compression": "lz4"}); err != nil {
+	if err := okHandle().SetProp("tank/ds", Nvlist{"refquota": uint64(1 << 20)}); err != nil {
 		t.Fatalf("SetProp: %v", err)
+	}
+
+	// The kernel's per-property errlist, as zfs_ioc_set_prop's put_nvlist
+	// leaves it: every rejected property is named with its own errno, and
+	// errors.Is reaches the ioctl's errno and each per-property one.
+	ioctlFn = func(_ *Handle, req uintptr, c *zfsCmd) error {
+		if req != ZFS_IOC_SET_PROP {
+			t.Fatalf("req = %#x, want ZFS_IOC_SET_PROP", req)
+		}
+		putDst(t, c, Nvlist{"refquota": int32(unix.ENOSPC), "compression": int32(unix.EINVAL)})
+		return unix.ENOSPC
+	}
+	err := okHandle().SetProp("tank/ds", Nvlist{"refquota": uint64(1), "compression": "lz4"})
+	want := `ZFS_IOC_SET_PROP "tank/ds": no space left on device (rejected: compression: invalid argument` + "\n" + `refquota: no space left on device)`
+	if err == nil || err.Error() != want {
+		t.Fatalf("SetProp err = %q, want %q", err, want)
+	}
+	if !errors.Is(err, unix.ENOSPC) || !errors.Is(err, unix.EINVAL) {
+		t.Errorf("errors.Is misses an errno: %v", err)
+	}
+
+	// Not filled (e.g. the permission policy refused before the handler ran),
+	// filled but undecodable, and filled with no non-zero entry: the ioctl's
+	// errno alone.
+	plain := `ZFS_IOC_SET_PROP "tank/ds": operation not permitted`
+	for _, fake := range []func(*zfsCmd){
+		func(*zfsCmd) {},
+		func(c *zfsCmd) { copy(lastDst, []byte{0xff, 0xff, 0xff, 0xff}); c.setU64(offZcNvlistDstFilled, 1) },
+		func(c *zfsCmd) { putDst(t, c, Nvlist{}) },
+	} {
+		ioctlFn = func(_ *Handle, _ uintptr, c *zfsCmd) error { fake(c); return unix.EPERM }
+		if err := okHandle().SetProp("tank/ds", Nvlist{"a": uint64(1)}); err == nil || err.Error() != plain {
+			t.Errorf("SetProp err = %v, want %q", err, plain)
+		}
 	}
 }
 
