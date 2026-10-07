@@ -203,6 +203,6 @@ func TestDmuReplayRecordLayout(t *testing.T) {
 		}
 	}
 	if dmuBackupMagic != 0x2f5bacbac {
-		t.Errorf("dmuBackupMagic = %#x, want 0x2f5bacbac", dmuBackupMagic)
+		t.Errorf("dmuBackupMagic = %#x, want 0x2f5bacbac", uint64(dmuBackupMagic))
 	}
 }
