@@ -55,7 +55,7 @@ jobs:
   # the log either way.
   kernel:
     name: the pool the tests have never had
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
