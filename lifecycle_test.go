@@ -5,6 +5,7 @@
 package zfs
 
 import (
+	"errors"
 	"reflect"
 	"syscall"
 	"testing"
@@ -44,6 +45,31 @@ func TestFirstErrlistErr(t *testing.T) {
 	// uint64-typed errno (some kernels pack it that way) is also surfaced.
 	if err := firstErrlistErr(Nvlist{"tank@s": uint64(uint64(syscall.EBUSY))}); err == nil {
 		t.Error("expected error for uint64 EBUSY entry")
+	}
+}
+
+// TestAllErrlistErrs verifies the every-entry errlist decoding SetProp uses
+// for zfs_set_prop_nvlist's {prop: int32 errno} list.
+func TestAllErrlistErrs(t *testing.T) {
+	if err := allErrlistErrs(nil); err != nil {
+		t.Errorf("nil errlist: got %v, want nil", err)
+	}
+	if err := allErrlistErrs(Nvlist{"x": int32(0), "y": "not-an-errno"}); err != nil {
+		t.Errorf("no non-zero errno: got %v, want nil", err)
+	}
+	err := allErrlistErrs(Nvlist{
+		"refquota":    int32(syscall.ENOSPC),
+		"atime":       uint64(0),
+		"compression": uint64(syscall.EINVAL),
+	})
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if got, want := err.Error(), "compression: invalid argument\nrefquota: no space left on device"; got != want {
+		t.Errorf("err = %q, want %q (every non-zero entry, sorted by name)", got, want)
+	}
+	if !errors.Is(err, syscall.ENOSPC) || !errors.Is(err, syscall.EINVAL) {
+		t.Errorf("errors.Is does not reach both per-property errnos: %v", err)
 	}
 }
 

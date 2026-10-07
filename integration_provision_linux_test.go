@@ -110,6 +110,18 @@ func TestIntegrationProvision(t *testing.T) {
 		t.Errorf("absent user prop: %v; want ErrPropNotSet", err)
 	}
 
+	// SetProp names the property the kernel rejected, from the errlist
+	// zfs_ioc_set_prop returns: compression is an INDEX property, so a string
+	// value fails zfs_set_prop_nvlist's type check with EINVAL.
+	err = h.SetProp(ds, Nvlist{"compression": "lz4"})
+	if err == nil {
+		t.Fatal("SetProp accepted compression as a string")
+	}
+	if !strings.Contains(err.Error(), "rejected: compression: invalid argument") || !errors.Is(err, unix.EINVAL) {
+		t.Errorf("SetProp error does not name compression with EINVAL: %v", err)
+	}
+	t.Logf("rejected set: %v", err)
+
 	// 3. User properties are inherited: a child created WITHOUT the tag reports
 	// the parent's value, with the parent as its source.
 	if err := h.CreateFilesystem(child); err != nil {
@@ -147,6 +159,29 @@ func TestIntegrationProvision(t *testing.T) {
 	// limit that was ignored and one applied at the wrong scale.
 	if written < refquota/2 || written > 2*refquota {
 		t.Errorf("EDQUOT after %d bytes, not near refquota %d", written, refquota)
+	}
+
+	// A refquota below what the dataset already references is refused with
+	// ENOSPC (dsl_dataset_set_refquota_check), and the error names refquota.
+	// Alongside a valid property in the same call, only refquota is named
+	// (zfs_set_prop_nvlist is best effort and lists failures only), and the
+	// refquota is left as it was.
+	err = h.SetProp(ds, Nvlist{"refquota": uint64(1 << 20), "atime": uint64(0)})
+	if err == nil {
+		t.Fatal("SetProp accepted a refquota below current usage")
+	}
+	if !strings.Contains(err.Error(), "rejected: refquota: no space left on device") || !errors.Is(err, unix.ENOSPC) {
+		t.Errorf("SetProp error does not name refquota with ENOSPC: %v", err)
+	}
+	if strings.Contains(err.Error(), "atime") {
+		t.Errorf("SetProp error names atime, which the kernel accepted: %v", err)
+	}
+	t.Logf("rejected refquota: %v", err)
+	if q, qerr := h.Refquota(ds); qerr != nil || q != refquota {
+		t.Errorf("Refquota after the rejected set = %d, %v; want %d", q, qerr, refquota)
+	}
+	if err := h.SetRefquota(ds, 1<<20); err == nil || !strings.Contains(err.Error(), "refquota") {
+		t.Errorf("SetRefquota below usage: %v; want an error naming refquota", err)
 	}
 
 	if err := Unmount(mnt, 0); err != nil {

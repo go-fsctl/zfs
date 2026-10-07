@@ -153,6 +153,12 @@ same conversion the `zpool`/`zfs` CLI performs before the ioctl. Enabling a
 feature-gated value (e.g. `compression=lz4`) requires that feature to be
 enabled on the pool at creation time.
 
+When the kernel rejects a property, `SetProp`'s error names it with its own
+errno (`... (rejected: refquota: no space left on device)`), decoded from the
+errors nvlist `zfs_ioc_set_prop` returns; `errors.Is` matches it. The kernel
+sets properties best effort, so the others in the same call may have been
+applied.
+
 ### Provisioning: what create-with-properties and mount guarantee
 
 Read from the OpenZFS sources, not assumed:
